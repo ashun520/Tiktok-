@@ -26,6 +26,68 @@ static void reloadPrefs() {
     canHideUI = [[settings objectForKey:@"canHideUI"] ?: @(YES) boolValue];
 }
 
+
+// Local replacement for the former libhdev helpers.
+@implementation HCommon
++ (void)showAlertMessage:(NSString *)message withTitle:(NSString *)title viewController:(UIViewController *)controller {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+        [controller presentViewController:alert animated:YES completion:nil];
+    });
+}
+@end
+
+@implementation HDownloadMediaWithProgress
+- (void)checkPermissionToPhotosAndDownload:(NSString *)urlString appendExtension:(NSString *)extension mediaType:(HMediaType)mediaType toAlbum:(NSString *)album viewController:(UIViewController *)controller {
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!url || !url.scheme.length) {
+        [HCommon showAlertMessage:@"视频地址无效" withTitle:@"无法下载" viewController:controller];
+        return;
+    }
+    NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithURL:url completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+        if (error || !location) {
+            [HCommon showAlertMessage:error.localizedDescription ?: @"下载失败" withTitle:@"下载失败" viewController:controller];
+            return;
+        }
+        NSString *name = [NSString stringWithFormat:@"TikTok_%@.%@", NSUUID.UUID.UUIDString, extension ?: @"mp4"];
+        NSURL *target = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:name]];
+        NSError *moveError = nil;
+        [[NSFileManager defaultManager] moveItemAtURL:location toURL:target error:&moveError];
+        if (moveError) {
+            [HCommon showAlertMessage:moveError.localizedDescription withTitle:@"下载失败" viewController:controller];
+            return;
+        }
+        void (^saveBlock)(void) = ^{
+            [[PHPhotoLibrary sharedPhotoLibrary] performChanges:^{
+                [PHAssetChangeRequest creationRequestForAssetFromVideoAtFileURL:target];
+            } completionHandler:^(BOOL success, NSError *saveError) {
+                [[NSFileManager defaultManager] removeItemAtURL:target error:nil];
+                [HCommon showAlertMessage:success ? @"已保存到系统照片图库" : (saveError.localizedDescription ?: @"保存到照片失败") withTitle:success ? @"下载完成" : @"保存失败" viewController:controller];
+            }];
+        };
+        if (@available(iOS 14.0, *)) {
+            [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelAddOnly handler:^(PHAuthorizationStatus status) {
+                if (status == PHAuthorizationStatusAuthorized || status == PHAuthorizationStatusLimited) saveBlock();
+                else {
+                    [[NSFileManager defaultManager] removeItemAtURL:target error:nil];
+                    [HCommon showAlertMessage:@"请在系统设置中允许添加照片" withTitle:@"需要照片权限" viewController:controller];
+                }
+            }];
+        } else {
+            [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
+                if (status == PHAuthorizationStatusAuthorized) saveBlock();
+                else {
+                    [[NSFileManager defaultManager] removeItemAtURL:target error:nil];
+                    [HCommon showAlertMessage:@"请允许访问照片图库" withTitle:@"需要照片权限" viewController:controller];
+                }
+            }];
+        }
+    }];
+    [task resume];
+}
+@end
+
 %group CoreLogic
 %hook AWEAwemeModel
 - (id)initWithDictionary:(id)arg1 error:(id *)arg2 {
