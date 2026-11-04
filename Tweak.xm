@@ -214,7 +214,7 @@ static AWEFeedContainerViewController *__weak sharedInstance;
 
 %new
 - (void)downloadButtonPressed:(UIButton *)sender {
-    NSString *videoURLString = self.model.video.playURL.originURLList.firstObject;
+    NSString *videoURLString = self.model.video.downloadURL.originURLList.firstObject ?: self.model.video.playURL.originURLList.firstObject;
     if (videoURLString.length == 0) {
         [HCommon showAlertMessage:@"当前视频暂时没有可用的下载地址" withTitle:@"无法下载" viewController:self];
         return;
