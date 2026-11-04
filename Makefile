@@ -7,6 +7,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = TikTokNoWatermark
 TikTokNoWatermark_FILES = Tweak.xm
 TikTokNoWatermark_FRAMEWORKS = Foundation UIKit Photos
-TikTokNoWatermark_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-nullability-completeness
+# Logos preprocesses .xm into Objective-C++; Photos headers require C++11+.
+TikTokNoWatermark_CFLAGS = -fobjc-arc -std=c++17 -Wno-deprecated-declarations -Wno-nullability-completeness
 
 include $(THEOS_MAKE_PATH)/tweak.mk
