@@ -100,13 +100,24 @@ static AWEFeedContainerViewController *__weak sharedInstance;
 
     if (downloadWithoutWatermark) {
         self.downloadButton = [UIButton buttonWithType:UIButtonTypeCustom];
-        [self.downloadButton.titleLabel setFont:[UIFont systemFontOfSize:15]];
+        [self.downloadButton.titleLabel setFont:[UIFont systemFontOfSize:13 weight:UIFontWeightSemibold]];
+        [self.downloadButton setTitle:@"去水印" forState:UIControlStateNormal];
+        [self.downloadButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        self.downloadButton.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.62];
+        self.downloadButton.layer.cornerRadius = 8.0;
+        self.downloadButton.clipsToBounds = YES;
         [self.downloadButton addTarget:self action:@selector(downloadButtonPressed:) forControlEvents:UIControlEventTouchUpInside];
-        // [self.downloadButton setTitle:@"Download" forState:UIControlStateNormal];
-        [self.downloadButton setImage:[UIImage imageWithContentsOfFile:@"/Library/Application Support/tiktokgod/download.png"] forState:UIControlStateNormal];
-        self.downloadButton.imageEdgeInsets = UIEdgeInsetsMake(3.0, 3.0, 3.0, 3.0);
-        self.downloadButton.frame = CGRectMake(self.view.frame.size.width - 30 - 10, 135.0, 30.0, 30.0);
+
+        // The icon is optional: the text label remains visible if the PNG is absent.
+        UIImage *downloadIcon = [UIImage imageWithContentsOfFile:@"/Library/Application Support/tiktokgod/download.png"];
+        if (downloadIcon != nil) {
+            [self.downloadButton setImage:downloadIcon forState:UIControlStateNormal];
+            self.downloadButton.imageView.contentMode = UIViewContentModeScaleAspectFit;
+        }
+        self.downloadButton.frame = CGRectMake(self.view.bounds.size.width - 88.0, 135.0, 78.0, 36.0);
+        self.downloadButton.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleTopMargin;
         [self.view addSubview:self.downloadButton];
+        [self.view bringSubviewToFront:self.downloadButton];
     }
 
     if (canHideUI) {
@@ -142,8 +153,13 @@ static AWEFeedContainerViewController *__weak sharedInstance;
 %new
 - (void)downloadButtonPressed:(UIButton *)sender {
     NSString *videoURLString = self.model.video.playURL.originURLList.firstObject;
+    if (videoURLString.length == 0) {
+        [HCommon showAlertMessage:@"当前视频暂时没有可用的下载地址" withTitle:@"无法下载" viewController:self];
+        return;
+    }
     if ([videoURLString containsString:@".m3u8"]) {
-        [HCommon showAlertMessage:@"This video format is not supported (.m3u8 file extension)" withTitle:@"Not supported" viewController:nil];
+        [HCommon showAlertMessage:@"当前视频为 HLS (.m3u8) 格式，暂不支持此下载方式" withTitle:@"暂不支持" viewController:self];
+        return;
     }
     [[[HDownloadMediaWithProgress alloc] init] checkPermissionToPhotosAndDownload:videoURLString appendExtension:@"mp4" mediaType:Video toAlbum:@"TikTok" viewController:self];
 }
