@@ -1,7 +1,15 @@
 #include <dlfcn.h>
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import <libhdev/HUtilities/HDownloadMediaWithProgress.h>
+#import <Photos/Photos.h>
+
+typedef NS_ENUM(NSInteger, HMediaType) { Video = 0 };
+@interface HCommon : NSObject
++ (void)showAlertMessage:(NSString *)message withTitle:(NSString *)title viewController:(UIViewController *)controller;
+@end
+@interface HDownloadMediaWithProgress : NSObject
+- (void)checkPermissionToPhotosAndDownload:(NSString *)url appendExtension:(NSString *)extension mediaType:(HMediaType)mediaType toAlbum:(NSString *)album viewController:(UIViewController *)controller;
+@end
 
 #define PLIST_PATH "/var/mobile/Library/Preferences/com.haoict.tiktokgodpref.plist"
 #define PREF_CHANGED_NOTIF "com.haoict.tiktokgodpref/PrefChanged"
