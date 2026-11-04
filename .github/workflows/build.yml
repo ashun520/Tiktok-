@@ -17,17 +17,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Theos
-        uses: Randomblock1/theos-action@v1
-        with:
-          theos-dir: theos
-          theos-src: https://github.com/theos/theos
-          theos-sdks: https://github.com/theos/sdks
-          theos-sdks-branch: master
+      - name: Install build tools
+        run: brew install ldid dpkg
+
+      - name: Install Theos
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --recursive https://github.com/theos/theos "$GITHUB_WORKSPACE/theos"
+          mkdir -p "$GITHUB_WORKSPACE/theos/sdks"
+          cd "$GITHUB_WORKSPACE/theos/sdks"
+          curl -L --fail https://github.com/theos/sdks/archive/refs/heads/master.zip -o sdks.zip
+          unzip -q sdks.zip
+          find . -maxdepth 2 -type d -name '*.sdk' -exec mv {} "$GITHUB_WORKSPACE/theos/sdks/" \;
+          rm -rf sdks.zip sdks-master
+          test -d "$GITHUB_WORKSPACE/theos/sdks/iPhoneOS.sdk" || find "$GITHUB_WORKSPACE/theos/sdks" -maxdepth 1 -name '*.sdk' -print
+          echo "THEOS=$GITHUB_WORKSPACE/theos" >> "$GITHUB_ENV"
+          echo "$GITHUB_WORKSPACE/theos/bin" >> "$GITHUB_PATH"
 
       - name: Compile tweak
+        shell: bash
         run: |
-          export THEOS="$GITHUB_WORKSPACE/theos"
+          set -euxo pipefail
           make clean
           make
           mkdir -p dist
