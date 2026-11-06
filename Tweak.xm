@@ -205,12 +205,105 @@ static NSInteger _ttg_global_touch_count = 0;
 static BOOL noads = YES;
 static BOOL downloadWithoutWatermark = YES;
 static BOOL autoPlayNextVideo = YES;
-static BOOL changeRegion = YES;
 static BOOL showProgressBar = YES;
 static BOOL canHideUI = YES;
 static BOOL enablePIP = YES;
 static BOOL enableBackgroundPlay = YES;
 static BOOL enableBypass = YES;
+
+#pragma mark - 地区切换（国家码 → mcc/mnc/iso/language/emoji）
+
+static NSString *ttgSelectedRegion = @"US"; // 默认美国
+
+static NSDictionary *TTGCountryList(void) {
+    static NSDictionary *dict = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        dict = @{
+            @"US":  @{@"name": @"🇺🇸 美国",   @"mcc": @"310", @"mnc": @"001", @"iso": @"us", @"lang": @"en"},
+            @"CA":  @{@"name": @"🇨🇦 加拿大", @"mcc": @"302", @"mnc": @"001", @"iso": @"ca", @"lang": @"en"},
+            @"GB":  @{@"name": @"🇬🇧 英国",   @"mcc": @"234", @"mnc": @"02",  @"iso": @"gb", @"lang": @"en"},
+            @"AU":  @{@"name": @"🇦🇺 澳大利亚", @"mcc": @"505", @"mnc": @"01", @"iso": @"au", @"lang": @"en"},
+            @"JP":  @{@"name": @"🇯🇵 日本",   @"mcc": @"440", @"mnc": @"01",  @"iso": @"jp", @"lang": @"ja"},
+            @"KR":  @{@"name": @"🇰🇷 韩国",   @"mcc": @"450", @"mnc": @"00",  @"iso": @"kr", @"lang": @"ko"},
+            @"CN":  @{@"name": @"🇨🇳 中国大陆", @"mcc": @"460", @"mnc": @"00", @"iso": @"cn", @"lang": @"zh-Hans"},
+            @"HK":  @{@"name": @"🇭🇰 香港",   @"mcc": @"454", @"mnc": @"00",  @"iso": @"hk", @"lang": @"zh-Hant"},
+            @"TW":  @{@"name": @"🇹🇼 台湾",   @"mcc": @"466", @"mnc": @"01",  @"iso": @"tw", @"lang": @"zh-Hant"},
+            @"SG":  @{@"name": @"🇸🇬 新加坡", @"mcc": @"525", @"mnc": @"01",  @"iso": @"sg", @"lang": @"en"},
+            @"MY":  @{@"name": @"🇲🇾 马来西亚", @"mcc": @"502", @"mnc": @"01", @"iso": @"my", @"lang": @"en"},
+            @"TH":  @{@"name": @"🇹🇭 泰国",   @"mcc": @"520", @"mnc": @"00",  @"iso": @"th", @"lang": @"th"},
+            @"VN":  @{@"name": @"🇻🇳 越南",   @"mcc": @"452", @"mnc": @"00",  @"iso": @"vn", @"lang": @"vi"},
+            @"ID":  @{@"name": @"🇮🇩 印尼",   @"mcc": @"510", @"mnc": @"01",  @"iso": @"id", @"lang": @"id"},
+            @"PH":  @{@"name": @"🇵🇭 菲律宾", @"mcc": @"515", @"mnc": @"01",  @"iso": @"ph", @"lang": @"en"},
+            @"IN":  @{@"name": @"🇮🇳 印度",   @"mcc": @"404", @"mnc": @"01",  @"iso": @"in", @"lang": @"en"},
+            @"FR":  @{@"name": @"🇫🇷 法国",   @"mcc": @"208", @"mnc": @"01",  @"iso": @"fr", @"lang": @"fr"},
+            @"DE":  @{@"name": @"🇩🇪 德国",   @"mcc": @"262", @"mnc": @"01",  @"iso": @"de", @"lang": @"de"},
+            @"ES":  @{@"name": @"🇪🇸 西班牙", @"mcc": @"214", @"mnc": @"01",  @"iso": @"es", @"lang": @"es"},
+            @"IT":  @{@"name": @"🇮🇹 意大利", @"mcc": @"222", @"mnc": @"01",  @"iso": @"it", @"lang": @"it"},
+            @"NL":  @{@"name": @"🇳🇱 荷兰",   @"mcc": @"204", @"mnc": @"01",  @"iso": @"nl", @"lang": @"nl"},
+            @"RU":  @{@"name": @"🇷🇺 俄罗斯", @"mcc": @"250", @"mnc": @"01",  @"iso": @"ru", @"lang": @"ru"},
+            @"BR":  @{@"name": @"🇧🇷 巴西",   @"mcc": @"724", @"mnc": @"01",  @"iso": @"br", @"lang": @"pt"},
+            @"MX":  @{@"name": @"🇲🇽 墨西哥", @"mcc": @"334", @"mnc": @"01",  @"iso": @"mx", @"lang": @"es"},
+            @"ZA":  @{@"name": @"🇿🇦 南非",   @"mcc": @"655", @"mnc": @"01",  @"iso": @"za", @"lang": @"en"},
+            @"EG":  @{@"name": @"🇪🇬 埃及",   @"mcc": @"602", @"mnc": @"01",  @"iso": @"eg", @"lang": @"ar"},
+            @"SA":  @{@"name": @"🇸🇦 沙特",   @"mcc": @"420", @"mnc": @"01",  @"iso": @"sa", @"lang": @"ar"},
+            @"AE":  @{@"name": @"🇦🇪 阿联酋", @"mcc": @"424", @"mnc": @"02",  @"iso": @"ae", @"lang": @"ar"},
+            @"UA":  @{@"name": @"🇺🇦 乌克兰", @"mcc": @"255", @"mnc": @"01",  @"iso": @"ua", @"lang": @"uk"},
+            @"SE":  @{@"name": @"🇸🇪 瑞典",   @"mcc": @"240", @"mnc": @"01",  @"iso": @"se", @"lang": @"sv"},
+            @"NO":  @{@"name": @"🇳🇴 挪威",   @"mcc": @"242", @"mnc": @"01",  @"iso": @"no", @"lang": @"no"},
+            @"FI":  @{@"name": @"🇫🇮 芬兰",   @"mcc": @"244", @"mnc": @"01",  @"iso": @"fi", @"lang": @"fi"},
+            @"DK":  @{@"name": @"🇩🇰 丹麦",   @"mcc": @"238", @"mnc": @"01",  @"iso": @"dk", @"lang": @"da"},
+            @"PL":  @{@"name": @"🇵🇱 波兰",   @"mcc": @"260", @"mnc": @"01",  @"iso": @"pl", @"lang": @"pl"},
+            @"TR":  @{@"name": @"🇹🇷 土耳其", @"mcc": @"286", @"mnc": @"01",  @"iso": @"tr", @"lang": @"tr"},
+        };
+    });
+    return dict;
+}
+
+static NSDictionary *TTGRegionInfo(NSString *code) {
+    return TTGCountryList()[code] ?: TTGCountryList()[@"US"];
+}
+
+// 获取当前选中地区的显示名（带 emoji）
+static NSString *TTGRegionDisplayName(void) {
+    return TTGRegionInfo(ttgSelectedRegion)[@"name"] ?: @"🇺🇸 美国";
+}
+
+// 应用地区切换（保存到 UserDefaults + 重新 hook CTCarrier + NSLocale）
+static void TTGApplyRegionChange(void) {
+    NSDictionary *info = TTGRegionInfo(ttgSelectedRegion);
+    NSString *iso = info[@"iso"];
+    NSString *mcc = info[@"mcc"];
+    NSString *mnc = info[@"mnc"];
+    NSString *lang = info[@"lang"];
+
+    NSLog(@"[TTG] 🌍 切换地区: %@ → iso=%@ mcc=%@ mnc=%@ lang=%@", ttgSelectedRegion, iso, mcc, mnc, lang);
+
+    // 1. 保存到 UserDefaults（下次启动恢复）
+    [[NSUserDefaults standardUserDefaults] setObject:ttgSelectedRegion forKey:@"ttg_selected_region"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+
+    // 2. hook CTCarrier（运营商信息）
+    Class CTCarrier = NSClassFromString(@"CTCarrier");
+    if (CTCarrier) {
+        class_replaceMethod(CTCarrier, @selector(mcc), imp_implementationWithBlock(^id(id s){ return mcc; }), "@@:");
+        class_replaceMethod(CTCarrier, @selector(mnc), imp_implementationWithBlock(^id(id s){ return mnc; }), "@@:");
+        class_replaceMethod(CTCarrier, @selector(isoCountryCode), imp_implementationWithBlock(^id(id s){ return iso; }), "@@:");
+        NSLog(@"[TTG] ✅ CTCarrier 已 hook → mcc=%@ mnc=%@ iso=%@", mcc, mnc, iso);
+    }
+
+    // 3. 写入 AppleLanguages（影响系统语言偏好，TikTok 会读这个）
+    NSArray *languages = @[lang, @"en"]; // 首选目标语言，英文兜底
+    [[NSUserDefaults standardUserDefaults] setObject:languages forKey:@"AppleLanguages"];
+
+    // 4. 刷新当前 app 语言环境（不重启）
+    [[NSUserDefaults standardUserDefaults] setObject:@{
+        @"AppleLanguages": languages,
+        @"AppleLocale": [NSString stringWithFormat:@"%@_%@", lang, iso.uppercaseString]
+    } forKey:@"NSGlobalDomain"];
+
+    NSLog(@"[TTG] ✅ 地区切换完成");
+}
 
 #pragma mark - 工具
 
@@ -711,7 +804,7 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
 
     // 顶部标题
     UILabel *title = [[UILabel alloc] init];
-    title.text = @"那年夏天";
+    title.text = @"🌿 那年夏天 🌊";
     title.font = [UIFont boldSystemFontOfSize:18];
     title.textColor = [UIColor colorWithWhite:0 alpha:0.9];
     [_sheet addSubview:title];
@@ -1042,6 +1135,91 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     NSLog(@"[TTG] ✋ window 手势就绪 → 已 disable 子视图长按");
 }
 
+#pragma mark - 地区选择页
+
+@interface TTGRegionPickerViewController : UITableViewController
+@end
+
+@implementation TTGRegionPickerViewController {
+    NSArray *_sortedKeys;
+    NSString *_originalRegion;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor whiteColor];
+    self.title = @"选择地区";
+    if (@available(iOS 13.0, *)) {
+        self.view.backgroundColor = [UIColor systemBackgroundColor];
+    }
+    self.tableView.rowHeight = 52;
+    self.tableView.separatorInset = UIEdgeInsetsMake(0, 16, 0, 0);
+
+    // 按国家名排序（🇺🇸 美国 会在🇦🇺 澳大利亚之前等）
+    _sortedKeys = [[TTGCountryList() allKeys] sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        return [TTGCountryList()[a][@"name"] compare:TTGCountryList()[b][@"name"]];
+    }];
+    _originalRegion = ttgSelectedRegion;
+
+    // 右上角取消按钮
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel target:self action:@selector(cancelTapped)];
+}
+
+- (void)cancelTapped {
+    // 没改动 → 什么都不做
+    [self.navigationController popViewControllerAnimated:YES];
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return _sortedKeys.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *rid = @"TTGRegionCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:rid];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:rid];
+    }
+    NSString *code = _sortedKeys[indexPath.row];
+    NSDictionary *info = TTGCountryList()[code];
+    cell.textLabel.text = info[@"name"];
+    cell.detailTextLabel.text = [NSString stringWithFormat:@"ISO: %@  MCC: %@  MNC: %@  Lang: %@", info[@"iso"], info[@"mcc"], info[@"mnc"], info[@"lang"]];
+    cell.detailTextLabel.textColor = [UIColor grayColor];
+    cell.detailTextLabel.font = [UIFont systemFontOfSize:11];
+
+    if ([code isEqualToString:ttgSelectedRegion]) {
+        cell.accessoryType = UITableViewCellAccessoryCheckmark;
+    } else {
+        cell.accessoryType = UITableViewCellAccessoryNone;
+    }
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    NSString *code = _sortedKeys[indexPath.row];
+    if ([code isEqualToString:ttgSelectedRegion]) {
+        [self.navigationController popViewControllerAnimated:YES];
+        return;
+    }
+
+    ttgSelectedRegion = code;
+    TTGApplyRegionChange();
+
+    // 震动反馈
+    if (@available(iOS 10.0, *)) {
+        UIImpactFeedbackGenerator *fb = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+        [fb impactOccurred];
+    }
+
+    NSString *name = TTGRegionDisplayName();
+    TTGShowToast([NSString stringWithFormat:@"✅ 已切换到 %@（建议重启 TikTok）", name]);
+
+    [self.navigationController popViewControllerAnimated:YES];
+}
+
+@end
+
 #pragma mark - 设置页（液态玻璃）
 
 @interface TTGSettingsViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
@@ -1120,24 +1298,18 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     [allOnBtn addTarget:self action:@selector(toggleAllOn) forControlEvents:UIControlEventTouchUpInside];
     [_card addSubview:allOnBtn];
 
-    // 数据
-    struct { NSString *t; BOOL *p; } raw[] = {
-        { @"去广告", &noads },
-        { @"无水印下载", &downloadWithoutWatermark },
-        { @"自动连播下一个", &autoPlayNextVideo },
-        { @"模拟美国地区", &changeRegion },
-        { @"强制显示进度条", &showProgressBar },
-        { @"隐藏视频上的UI", &canHideUI },
-        { @"画中画（PiP）", &enablePIP },
-        { @"后台继续播放", &enableBackgroundPlay },
-        { @"安全检测绕过", &enableBypass },
-    };
-    int n = sizeof(raw)/sizeof(raw[0]);
-    NSMutableArray *arr = [NSMutableArray array];
-    for (int i = 0; i < n; i++) {
-        [arr addObject:@{@"title": raw[i].t, @"ptr": [NSValue valueWithPointer:(const void *)raw[i].p]}];
-    }
-    _rows = arr;
+    // 数据（两种类型：switch 行带 ptr；action 行带 action key）
+    NSMutableArray *rows = [NSMutableArray array];
+    [rows addObject:@{@"title": @"去广告",       @"ptr": [NSValue valueWithPointer:(const void *)&noads]}];
+    [rows addObject:@{@"title": @"无水印下载",    @"ptr": [NSValue valueWithPointer:(const void *)&downloadWithoutWatermark]}];
+    [rows addObject:@{@"title": @"自动连播下一个", @"ptr": [NSValue valueWithPointer:(const void *)&autoPlayNextVideo]}];
+    [rows addObject:@{@"title": @"🌍 切换地区",   @"action": @"region"}];  // 特殊行，点击弹选择列表
+    [rows addObject:@{@"title": @"强制显示进度条", @"ptr": [NSValue valueWithPointer:(const void *)&showProgressBar]}];
+    [rows addObject:@{@"title": @"隐藏视频上的UI", @"ptr": [NSValue valueWithPointer:(const void *)&canHideUI]}];
+    [rows addObject:@{@"title": @"画中画（PiP）", @"ptr": [NSValue valueWithPointer:(const void *)&enablePIP]}];
+    [rows addObject:@{@"title": @"后台继续播放",   @"ptr": [NSValue valueWithPointer:(const void *)&enableBackgroundPlay]}];
+    [rows addObject:@{@"title": @"安全检测绕过",   @"ptr": [NSValue valueWithPointer:(const void *)&enableBypass]}];
+    _rows = rows;
 
     // TableView
     _tableView = [[UITableView alloc] init];
@@ -1235,7 +1407,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (void)toggleAllOn {
-    noads = downloadWithoutWatermark = autoPlayNextVideo = changeRegion = showProgressBar = canHideUI = enablePIP = enableBackgroundPlay = enableBypass = YES;
+    noads = downloadWithoutWatermark = autoPlayNextVideo = showProgressBar = canHideUI = enablePIP = enableBackgroundPlay = enableBypass = YES;
     [_tableView reloadData];
     TTGShowToast(@"✅ 所有功能已开启");
 }
@@ -1245,35 +1417,65 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *ReuseId = @"TTGSettingsCell2";
+    static NSString *ReuseId = @"TTGSettingsCell3";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:ReuseId];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:ReuseId];
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:ReuseId];
         cell.backgroundColor = [UIColor clearColor];
         cell.contentView.backgroundColor = [UIColor clearColor];
     }
     NSDictionary *row = _rows[indexPath.row];
-    BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
     cell.textLabel.text = row[@"title"];
     cell.textLabel.font = [UIFont systemFontOfSize:15];
     cell.textLabel.textColor = [UIColor colorWithWhite:0 alpha:0.85];
 
-    UISwitch *sw = (UISwitch *)cell.accessoryView;
-    if (!sw || ![sw isKindOfClass:[UISwitch class]]) {
-        sw = [[UISwitch alloc] init];
-        if (@available(iOS 13.0, *)) {
-            sw.onTintColor = [UIColor systemGreenColor];
-        } else {
-            sw.onTintColor = [UIColor colorWithRed:0.3 green:0.75 blue:0.4 alpha:1];
+    if (row[@"action"]) {
+        // Action 行：显示当前地区名 + 右箭头
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.accessoryView = nil;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        cell.detailTextLabel.text = TTGRegionDisplayName();
+        cell.detailTextLabel.font = [UIFont systemFontOfSize:13];
+        cell.detailTextLabel.textColor = [UIColor colorWithWhite:0 alpha:0.5];
+    } else {
+        // Switch 行
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.detailTextLabel.text = nil;
+        BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
+
+        UISwitch *sw = (UISwitch *)cell.accessoryView;
+        if (!sw || ![sw isKindOfClass:[UISwitch class]]) {
+            sw = [[UISwitch alloc] init];
+            if (@available(iOS 13.0, *)) {
+                sw.onTintColor = [UIColor systemGreenColor];
+            } else {
+                sw.onTintColor = [UIColor colorWithRed:0.3 green:0.75 blue:0.4 alpha:1];
+            }
+            cell.accessoryView = sw;
         }
-        cell.accessoryView = sw;
+        sw.tag = indexPath.row;
+        sw.on = flag ? *flag : NO;
+        [sw removeTarget:nil action:nil forControlEvents:UIControlEventValueChanged];
+        [sw addTarget:self action:@selector(switchToggled:) forControlEvents:UIControlEventValueChanged];
     }
-    sw.tag = indexPath.row;
-    sw.on = flag ? *flag : NO;
-    [sw removeTarget:nil action:nil forControlEvents:UIControlEventValueChanged];
-    [sw addTarget:self action:@selector(switchToggled:) forControlEvents:UIControlEventValueChanged];
     return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    NSDictionary *row = _rows[indexPath.row];
+    if ([row[@"action"] isEqualToString:@"region"]) {
+        // 打开地区选择页（包在 UINavigationController 里 push）
+        TTGRegionPickerViewController *picker = [[TTGRegionPickerViewController alloc] init];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:picker];
+        nav.navigationBar.tintColor = [UIColor systemBlueColor];
+        [self presentViewController:nav animated:YES completion:nil];
+
+        // 等用户选完 → 刷新 cell 的 detailTextLabel
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self->_tableView reloadData];
+        });
+    }
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -1308,15 +1510,12 @@ static void TTGInstallSafeHooks(void) {
             }];
         NSLog(@"[TTG] ✅ 后台播放 hook");
 
-        if (changeRegion) {
-            Class CTCarrier = NSClassFromString(@"CTCarrier");
-            if (CTCarrier) {
-                class_replaceMethod(CTCarrier, @selector(mcc), imp_implementationWithBlock(^id(id s){ return @"310"; }), "@@:");
-                class_replaceMethod(CTCarrier, @selector(mnc), imp_implementationWithBlock(^id(id s){ return @"001"; }), "@@:");
-                class_replaceMethod(CTCarrier, @selector(isoCountryCode), imp_implementationWithBlock(^id(id s){ return @"us"; }), "@@:");
-                NSLog(@"[TTG] ✅ CTCarrier hook");
-            }
+        // 恢复用户上次选择的地区 + 应用
+        NSString *savedRegion = [[NSUserDefaults standardUserDefaults] stringForKey:@"ttg_selected_region"];
+        if (savedRegion.length > 0 && TTGCountryList()[savedRegion]) {
+            ttgSelectedRegion = savedRegion;
         }
+        TTGApplyRegionChange(); // 无论用户选了啥都 apply（默认 US）
     } @catch (NSException *e) {
         NSLog(@"[TTG] hook install err: %@", e);
     }
@@ -1578,10 +1777,22 @@ static void TTGDownloadMusic(void) {
 
         TTGShowToast(@"⏳ 正在提取音频...");
 
+        // 清洗文件名（iOS 文件系统不允许的字符）
+        NSString *cleanName = [musicName stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+        cleanName = [cleanName stringByReplacingOccurrencesOfString:@"\\" withString:@"_"];
+        cleanName = [cleanName stringByReplacingOccurrencesOfString:@":" withString:@"_"];
+        cleanName = [cleanName stringByReplacingOccurrencesOfString:@"*" withString:@"_"];
+        cleanName = [cleanName stringByReplacingOccurrencesOfString:@"?" withString:@"_"];
+        cleanName = [cleanName stringByReplacingOccurrencesOfString:@"\"" withString:@"_"];
+        cleanName = [cleanName stringByReplacingOccurrencesOfString:@"<" withString:@"_"];
+        cleanName = [cleanName stringByReplacingOccurrencesOfString:@">" withString:@"_"];
+        cleanName = [cleanName stringByReplacingOccurrencesOfString:@"|" withString:@"_"];
+        if (cleanName.length == 0) cleanName = @"tiktok_audio";
+
         // 下载到 Documents（进程 100% 有写权限）
         NSString *docDir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
         NSString *outPath = [docDir stringByAppendingPathComponent:
-            [NSString stringWithFormat:@"%@_%.0f.mp3", musicName, [[NSDate date] timeIntervalSince1970]]];
+            [NSString stringWithFormat:@"%@_%ld.mp3", cleanName, (long)[[NSDate date] timeIntervalSince1970]]];
         NSURL *outURL = [NSURL fileURLWithPath:outPath];
         [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
 
@@ -1597,21 +1808,33 @@ static void TTGDownloadMusic(void) {
             completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     if (error || !location) {
+                        NSLog(@"[TTG] 🎵 ❌ download err: %@", error);
                         TTGShowToast(@"❌ 下载音频失败");
                         return;
                     }
                     NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
                     if (http.statusCode >= 400) {
-                        TTGShowToast(@"❌ 音频链接失效");
+                        TTGShowToast([NSString stringWithFormat:@"❌ 音频链接失效(%ld)", (long)http.statusCode]);
                         return;
                     }
-                    NSError *copyErr = nil;
-                    if (![[NSFileManager defaultManager] copyItemAtURL:location toURL:outURL error:&copyErr]) {
-                        NSLog(@"[TTG] 🎵 ❌ 复制失败: %@ -> %@, err=%@", location, outURL, copyErr);
-                        TTGShowToast([NSString stringWithFormat:@"❌ 写入失败: %@", copyErr.localizedDescription ?: @"未知"]);
+
+                    // 用 NSData 直接读，绕开 CFNetwork 临时文件的 copyItem 问题
+                    NSError *readErr = nil;
+                    NSData *data = [NSData dataWithContentsOfURL:location options:0 error:&readErr];
+                    if (!data) {
+                        NSLog(@"[TTG] 🎵 ❌ 读临时文件失败: %@", readErr);
+                        TTGShowToast(@"❌ 读取下载数据失败");
                         return;
                     }
-                    NSLog(@"[TTG] 🎵 ✅ 音频已下载 → present 分享菜单");
+                    NSLog(@"[TTG] 🎵 下载完成 %ld bytes, 写 → %@", (long)data.length, outPath);
+
+                    NSError *writeErr = nil;
+                    if (![data writeToURL:outURL options:NSDataWritingAtomic error:&writeErr]) {
+                        NSLog(@"[TTG] 🎵 ❌ writeToURL 失败: %@", writeErr);
+                        TTGShowToast([NSString stringWithFormat:@"❌ 保存失败: %@", writeErr.localizedDescription ?: @"未知"]);
+                        return;
+                    }
+                    NSLog(@"[TTG] 🎵 ✅ 写入成功 → present 分享菜单");
                     TTGShowToast(@"✅ 提取成功，选择存储方式");
 
                     // 弹出系统分享菜单（UIActivityViewController）
