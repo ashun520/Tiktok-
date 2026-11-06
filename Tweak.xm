@@ -9,6 +9,7 @@
 
 static void TTGDownloadAndSave(void);
 static void TTGDownloadImage(void);
+static void TTGCopyShareLink(void);
 static void TTGDownloadMusic(void);
 static void TTGDownloadLivePhoto(void);
 
@@ -736,12 +737,13 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
     [_sheet addSubview:btnContainer];
 
     // 构建按钮
-    // 3 行 × 2 列：保存视频、保存图片、保存音频、保存实况、设置面板、（空位）
+    // 3 行 × 2 列：保存视频、保存图片、保存音频、保存实况、复制链接、设置面板
     NSArray *actionBtns = @[
         @{@"icon": @"arrow.down.circle.fill", @"title": @"保存视频", @"action": ^{ TTGDownloadAndSave(); }},
         @{@"icon": @"photo.on.rectangle", @"title": @"保存图片", @"action": ^{ TTGDownloadImage(); }},
         @{@"icon": @"music.note", @"title": @"保存音频", @"action": ^{ TTGDownloadMusic(); }},
         @{@"icon": @"livephoto", @"title": @"保存实况", @"action": ^{ TTGDownloadLivePhoto(); }},
+        @{@"icon": @"link", @"title": @"复制链接", @"action": ^{ TTGCopyShareLink(); }},
         @{@"icon": @"gearshape.fill", @"title": @"设置面板", @"action": ^{ [self openSettings]; }},
     ];
 
@@ -1442,6 +1444,68 @@ static void TTGDownloadImage(void) {
     }
 }
 
+#pragma mark - 复制视频/帖子链接
+
+static void TTGCopyShareLink(void) {
+    @try {
+        id aweme = TTGFindAwemeFromViewHierarchy();
+        if (!aweme) { TTGShowToast(@"❌ 没找到当前内容"); return; }
+
+        // TikTok aweme 有多种链接字段，逐个试
+        NSString *link = nil;
+
+        // 1. aweme.shareURL / aweme.shareInfo.shareUrl
+        id shareInfo = TTGGetValue(aweme, @"shareInfo");
+        if (shareInfo) {
+            for (NSString *key in @[@"shareUrl", @"url", @"shareURL"]) {
+                id v = TTGGetValue(shareInfo, key);
+                if ([v isKindOfClass:[NSString class]] && [v hasPrefix:@"http"]) { link = v; break; }
+            }
+        }
+        if (!link) {
+            for (NSString *key in @[@"shareURL", @"shareUrl", @"share_link", @"webURL"]) {
+                id v = TTGGetValue(aweme, key);
+                if ([v isKindOfClass:[NSString class]] && [v hasPrefix:@"http"]) { link = v; break; }
+            }
+        }
+
+        // 2. 兜底：用 awemeID 拼一个 web 链接（TikTok 网页版）
+        if (!link) {
+            id awemeID = TTGGetValue(aweme, @"awemeID");
+            if (!awemeID) awemeID = TTGGetValue(aweme, @"aid");
+            if (awemeID) {
+                // 尝试找 author 的 secUid / uniqueID
+                id author = TTGGetValue(aweme, @"author");
+                NSString *secUid = nil;
+                if (author) {
+                    for (NSString *key in @[@"secUid", @"sec_uid", @"uniqueID", @"unique_id"]) {
+                        id v = TTGGetValue(author, key);
+                        if ([v isKindOfClass:[NSString class]] && [v length] > 0) { secUid = v; break; }
+                    }
+                }
+                if (secUid) {
+                    link = [NSString stringWithFormat:@"https://www.tiktok.com/@%@/video/%@", secUid, awemeID];
+                } else {
+                    link = [NSString stringWithFormat:@"https://www.tiktok.com/video/%@", awemeID];
+                }
+                NSLog(@"[TTG] 🔗 用 awemeID 拼了链接: %@", link);
+            }
+        }
+
+        if (!link) {
+            TTGShowToast(@"❌ 没找到可复制的链接");
+            return;
+        }
+
+        NSLog(@"[TTG] 🔗 复制链接: %@", link);
+        [UIPasteboard generalPasteboard].string = link;
+        TTGShowToast(@"✅ 链接已复制到剪贴板");
+    } @catch (NSException *e) {
+        NSLog(@"[TTG] copy link err: %@", e);
+        TTGShowToast(@"❌ 复制出错");
+    }
+}
+
 #pragma mark - 保存音乐（到 Files 目录）
 
 // 从 aweme.music 提取音乐 URL
@@ -1514,12 +1578,14 @@ static void TTGDownloadMusic(void) {
 
         TTGShowToast(@"⏳ 正在提取音频...");
 
-        // 下载到 tmp（用 .mp3 扩展名，分享菜单能识别）
-        NSString *tmpDir = NSTemporaryDirectory();
-        NSString *outPath = [tmpDir stringByAppendingPathComponent:
+        // 下载到 Documents（进程 100% 有写权限）
+        NSString *docDir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        NSString *outPath = [docDir stringByAppendingPathComponent:
             [NSString stringWithFormat:@"%@_%.0f.mp3", musicName, [[NSDate date] timeIntervalSince1970]]];
         NSURL *outURL = [NSURL fileURLWithPath:outPath];
         [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
+
+        NSLog(@"[TTG] 🎵 outPath = %@, docDir writable=%d", outPath, [[NSFileManager defaultManager] isWritableFileAtPath:docDir]);
 
         NSURL *url = [NSURL URLWithString:urlStr];
         NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
@@ -1541,7 +1607,8 @@ static void TTGDownloadMusic(void) {
                     }
                     NSError *copyErr = nil;
                     if (![[NSFileManager defaultManager] copyItemAtURL:location toURL:outURL error:&copyErr]) {
-                        TTGShowToast(@"❌ 写入临时文件失败");
+                        NSLog(@"[TTG] 🎵 ❌ 复制失败: %@ -> %@, err=%@", location, outURL, copyErr);
+                        TTGShowToast([NSString stringWithFormat:@"❌ 写入失败: %@", copyErr.localizedDescription ?: @"未知"]);
                         return;
                     }
                     NSLog(@"[TTG] 🎵 ✅ 音频已下载 → present 分享菜单");
