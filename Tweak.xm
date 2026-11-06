@@ -10,6 +10,7 @@
 static void TTGDownloadAndSave(void);
 static void TTGDownloadImage(void);
 static void TTGDownloadMusic(void);
+static void TTGDownloadLivePhoto(void);
 
 @class TTGSettingsViewController;
 
@@ -673,7 +674,7 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
     [_dimmingView addGestureRecognizer:tap];
 
     // 底部 sheet（磨砂玻璃）
-    _sheetH = 280;   // 改小（只有按钮，没有滑块）
+    _sheetH = 340;   // 加大（3 行按钮）
     CGFloat bottomPad = 0;
     if (@available(iOS 11.0, *)) {
         UIWindow *w = TTGFrontmostWindow();
@@ -735,12 +736,12 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
     [_sheet addSubview:btnContainer];
 
     // 构建按钮
-    // 行1：主动作（保存视频、保存图片、保存音乐、设置）
-    // 行2-3：开关（2列）
+    // 3 行 × 2 列：保存视频、保存图片、保存音乐、保存实况、设置面板、（空位）
     NSArray *actionBtns = @[
         @{@"icon": @"arrow.down.circle.fill", @"title": @"保存视频", @"action": ^{ TTGDownloadAndSave(); }},
         @{@"icon": @"photo.on.rectangle", @"title": @"保存图片", @"action": ^{ TTGDownloadImage(); }},
         @{@"icon": @"music.note", @"title": @"保存音乐", @"action": ^{ TTGDownloadMusic(); }},
+        @{@"icon": @"livephoto", @"title": @"保存实况", @"action": ^{ TTGDownloadLivePhoto(); }},
         @{@"icon": @"gearshape.fill", @"title": @"设置面板", @"action": ^{ [self openSettings]; }},
     ];
 
@@ -759,16 +760,7 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
     }
 
     // 开关已移到双指长按的设置面板，这里只留主动作按钮
-    // 关闭按钮
-    UIButton *sheetClose = [UIButton buttonWithType:UIButtonTypeSystem];
-    [sheetClose setTitle:@"关闭" forState:UIControlStateNormal];
-    sheetClose.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
-    [sheetClose setTitleColor:[UIColor colorWithWhite:0 alpha:0.6] forState:UIControlStateNormal];
-    sheetClose.backgroundColor = [UIColor colorWithWhite:0 alpha:0.08];
-    sheetClose.layer.cornerRadius = 22;
-    [sheetClose addTarget:self action:@selector(dismiss) forControlEvents:UIControlEventTouchUpInside];
-    sheetClose.tag = 9003;
-    [_sheet addSubview:sheetClose];
+    // （底部"关闭"按钮已移除，点遮罩/右上角✕即可关闭）
 
     // 底部署名
     UILabel *footer = [[UILabel alloc] init];
@@ -872,13 +864,9 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
     sub.frame = CGRectMake(pad, 38, 200, 14);
     closeBtn.frame = CGRectMake(W - 46, 12, 28, 28);
 
-    // 按钮容器：y = 70, 2行 x 2列 = 106pt
+    // 按钮容器：y = 68, 3行 x 2列（5 个按钮 + 1 空位）
     UIView *btnContainer = (UIView *)[_sheet viewWithTag:9001];
-    btnContainer.frame = CGRectMake(pad, 68, W - pad * 2, 106);
-
-    // 关闭按钮
-    UIButton *sheetClose = (UIButton *)[_sheet viewWithTag:9003];
-    sheetClose.frame = CGRectMake((W - 100) / 2, _sheetH - 56, 100, 40);
+    btnContainer.frame = CGRectMake(pad, 68, W - pad * 2, 164);  // 3 行 × 48px + 2 × 10px gap
 
     // 底部署名
     UILabel *footer = (UILabel *)[_sheet viewWithTag:9004];
@@ -1332,14 +1320,350 @@ static void TTGInstallSafeHooks(void) {
     }
 }
 
-#pragma mark - 保存图片/音乐（占位，后续补完整）
+#pragma mark - 保存图片
+
+// 从 aweme 里提取所有图片 URL（支持图集/单图/封面）
+static NSArray *TTGExtractImageURLs(id aweme) {
+    if (!aweme) return nil;
+    @try {
+        NSMutableArray *urls = [NSMutableArray array];
+
+        // 1. aweme.images → 图集（数组）
+        NSArray *images = TTGGetValue(aweme, @"images");
+        if ([images isKindOfClass:[NSArray class]]) {
+            for (id img in images) {
+                for (NSString *listKey in @[@"originURLList", @"urlList", @"urls"]) {
+                    NSArray *list = TTGGetValue(img, listKey);
+                    if ([list isKindOfClass:[NSArray class]]) {
+                        for (id u in list) {
+                            if ([u isKindOfClass:[NSString class]] && [u hasPrefix:@"http"]) {
+                                [urls addObject:u];
+                            } else if ([u isKindOfClass:[NSURL class]]) {
+                                [urls addObject:[(NSURL *)u absoluteString]];
+                            } else {
+                                NSString *s = TTGGetValue(u, @"url");
+                                if (s && [s hasPrefix:@"http"]) [urls addObject:s];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. aweme.video.cover → 视频封面（兜底）
+        if (urls.count == 0) {
+            id video = TTGGetValue(aweme, @"video");
+            if (video) {
+                id cover = TTGGetValue(video, @"cover");
+                if (!cover && [NSStringFromClass([aweme class]) containsString:@"Video"]) cover = video;
+                if (cover) {
+                    for (NSString *listKey in @[@"originURLList", @"urlList", @"urls"]) {
+                        NSArray *list = TTGGetValue(cover, listKey);
+                        if ([list isKindOfClass:[NSArray class]]) {
+                            for (id u in list) {
+                                if ([u isKindOfClass:[NSString class]] && [u hasPrefix:@"http"]) {
+                                    [urls addObject:u]; break;
+                                } else if ([u isKindOfClass:[NSURL class]]) {
+                                    [urls addObject:[(NSURL *)u absoluteString]]; break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        NSLog(@"[TTG] 🖼️ 提取到 %lu 张图片", (unsigned long)urls.count);
+        return urls;
+    } @catch (NSException *e) {
+        NSLog(@"[TTG] extract image err: %@", e);
+        return nil;
+    }
+}
 
 static void TTGDownloadImage(void) {
-    TTGShowToast(@"🖼️ 图片保存开发中，先用保存视频");
+    @try {
+        id aweme = TTGFindAwemeFromViewHierarchy();
+        if (!aweme) { TTGShowToast(@"❌ 没找到当前内容"); return; }
+
+        NSArray *urls = TTGExtractImageURLs(aweme);
+        if (!urls || urls.count == 0) { TTGShowToast(@"❌ 没找到图片（视频类型无图）"); return; }
+
+        TTGShowToast([NSString stringWithFormat:@"⏳ 保存 %lu 张图片中...", (unsigned long)urls.count]);
+
+        // 检查相册权限
+        [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
+            if (status != PHAuthorizationStatusAuthorized) {
+                TTGShowToast(@"❌ 没相册权限");
+                return;
+            }
+
+            dispatch_group_t group = dispatch_group_create();
+            __block int successCount = 0;
+
+            for (int i = 0; i < (int)urls.count; i++) {
+                NSString *urlStr = urls[i];
+                dispatch_group_enter(group);
+
+                NSURL *url = [NSURL URLWithString:urlStr];
+                NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithURL:url
+                    completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+                        if (!error && location) {
+                            UIImage *img = [UIImage imageWithContentsOfFile:location.path];
+                            if (img) {
+                                [[PHPhotoLibrary sharedPhotoLibrary] performChanges:^{
+                                    [PHAssetChangeRequest creationRequestForAssetFromImage:img];
+                                } completionHandler:^(BOOL ok, NSError *saveErr) {
+                                    if (ok) { successCount++; NSLog(@"[TTG] 🖼️ ✅ 第 %d 张保存成功", i+1); }
+                                    else NSLog(@"[TTG] 🖼️ ❌ 第 %d 张保存失败: %@", i+1, saveErr);
+                                    dispatch_group_leave(group);
+                                }];
+                            } else {
+                                dispatch_group_leave(group);
+                            }
+                        } else {
+                            dispatch_group_leave(group);
+                        }
+                    }];
+                [task resume];
+            }
+
+            dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+                if (successCount > 0) {
+                    TTGShowToast([NSString stringWithFormat:@"✅ 已保存 %d 张图片", successCount]);
+                } else {
+                    TTGShowToast(@"❌ 全部保存失败");
+                }
+            });
+        }];
+    } @catch (NSException *e) {
+        NSLog(@"[TTG] save image err: %@", e);
+        TTGShowToast(@"❌ 保存出错");
+    }
+}
+
+#pragma mark - 保存音乐（到 Files 目录）
+
+// 从 aweme.music 提取音乐 URL
+static NSString *TTGExtractMusicURL(id aweme) {
+    if (!aweme) return nil;
+    @try {
+        id music = TTGGetValue(aweme, @"music");
+        if (!music) {
+            NSLog(@"[TTG] ❌ aweme 里没有 music 属性");
+            return nil;
+        }
+        NSLog(@"[TTG] 🎵 music class=%@ props=%@", NSStringFromClass([music class]), [TTGPropertyListForClass([music class]) componentsJoinedByString:@","]);
+
+        // 音乐 URL 通常在 playURL / downloadURL 里
+        for (NSString *urlKey in @[@"playURL", @"downloadURL", @"playApi", @"url"]) {
+            id urlModel = TTGGetValue(music, urlKey);
+            if (!urlModel) continue;
+            if ([urlModel isKindOfClass:[NSString class]] && [urlModel hasPrefix:@"http"]) {
+                NSLog(@"[TTG] 🎵 music.%@ = %@", urlKey, urlModel);
+                return urlModel;
+            }
+            for (NSString *listKey in @[@"originURLList", @"urlList", @"urls"]) {
+                NSArray *list = TTGGetValue(urlModel, listKey);
+                if ([list isKindOfClass:[NSArray class]] && [list count] > 0) {
+                    id first = list[0];
+                    if ([first isKindOfClass:[NSString class]] && [first hasPrefix:@"http"]) return first;
+                    if ([first isKindOfClass:[NSURL class]]) return ((NSURL *)first).absoluteString;
+                    NSString *surl = TTGGetValue(first, @"url");
+                    if (surl && [surl hasPrefix:@"http"]) return surl;
+                }
+            }
+            NSString *direct = TTGGetValue(urlModel, @"url");
+            if (direct && [direct hasPrefix:@"http"]) return direct;
+        }
+    } @catch (NSException *e) {
+        NSLog(@"[TTG] extract music err: %@", e);
+    }
+    return nil;
+}
+
+// 从 aweme.music 提取音乐名（用于保存文件名）
+static NSString *TTGExtractMusicName(id aweme) {
+    if (!aweme) return @"tiktok_music";
+    @try {
+        id music = TTGGetValue(aweme, @"music");
+        if (!music) return @"tiktok_music";
+        NSString *name = TTGGetValue(music, @"musicName");
+        if (!name) name = TTGGetValue(music, @"title");
+        if (!name) name = TTGGetValue(music, @"name");
+        if (name && name.length > 0) {
+            // 清理文件名
+            name = [name stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+            name = [name stringByReplacingOccurrencesOfString:@"\\" withString:@"_"];
+            return name;
+        }
+    } @catch (NSException *e) {}
+    return @"tiktok_music";
 }
 
 static void TTGDownloadMusic(void) {
-    TTGShowToast(@"🎵 音乐保存开发中");
+    @try {
+        id aweme = TTGFindAwemeFromViewHierarchy();
+        if (!aweme) { TTGShowToast(@"❌ 没找到当前内容"); return; }
+
+        NSString *urlStr = TTGExtractMusicURL(aweme);
+        if (!urlStr) { TTGShowToast(@"❌ 这首没音乐可保存"); return; }
+
+        NSString *musicName = TTGExtractMusicName(aweme);
+        NSLog(@"[TTG] 🎵 音乐名: %@ URL: %@", musicName, urlStr);
+
+        TTGShowToast(@"⏳ 正在下载音乐...");
+
+        // 保存到 tmp 然后复制到 Documents（Files App 可访问）
+        NSString *docDir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        NSString *outPath = [docDir stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"%@_%.0f.mp3", musicName, [[NSDate date] timeIntervalSince1970]]];
+        NSURL *outURL = [NSURL fileURLWithPath:outPath];
+        [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
+
+        NSURL *url = [NSURL URLWithString:urlStr];
+        NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+        [req setValue:@"com.ss.android.ugc.aweme" forHTTPHeaderField:@"X-App-Pkg"];
+        [req setValue:@"Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 com.ss.android.ugc.aweme/47.6.0" forHTTPHeaderField:@"User-Agent"];
+        [req setTimeoutInterval:120];
+
+        NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithRequest:req
+            completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (error || !location) {
+                        TTGShowToast(@"❌ 下载音乐失败");
+                        return;
+                    }
+                    NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+                    if (http.statusCode >= 400) {
+                        TTGShowToast(@"❌ 音乐链接失效");
+                        return;
+                    }
+                    [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
+                    NSError *copyErr = nil;
+                    if ([[NSFileManager defaultManager] copyItemAtURL:location toURL:outURL error:&copyErr]) {
+                        NSLog(@"[TTG] 🎵 ✅ 已保存到 %@", outPath);
+                        TTGShowToast([NSString stringWithFormat:@"✅ 音乐已存「文件」- %@", musicName]);
+                    } else {
+                        TTGShowToast(@"❌ 保存到文件失败");
+                    }
+                });
+            }];
+        [task resume];
+    } @catch (NSException *e) {
+        NSLog(@"[TTG] save music err: %@", e);
+        TTGShowToast(@"❌ 保存出错");
+    }
+}
+
+#pragma mark - 保存实况图片（Live Photo）
+
+static void TTGDownloadLivePhoto(void) {
+    @try {
+        id aweme = TTGFindAwemeFromViewHierarchy();
+        if (!aweme) { TTGShowToast(@"❌ 没找到当前内容"); return; }
+
+        // 检查是否是实况内容（aweme.imageList 里的每个 item 如果有 photoMode=LivePhoto 或同时有静态图和视频片段）
+        NSArray *images = TTGGetValue(aweme, @"images");
+        if (![images isKindOfClass:[NSArray class]] || images.count == 0) {
+            TTGShowToast(@"❌ 当前内容不是实况图片");
+            return;
+        }
+
+        // 收集所有图片 URL（同保存图片，但标记为实况）
+        NSMutableArray *imageURLs = [NSMutableArray array];
+        NSMutableArray *videoURLs = [NSMutableArray array];
+
+        for (id img in images) {
+            // 图片
+            for (NSString *listKey in @[@"originURLList", @"urlList", @"urls"]) {
+                NSArray *list = TTGGetValue(img, listKey);
+                if ([list isKindOfClass:[NSArray class]]) {
+                    for (id u in list) {
+                        NSString *s = nil;
+                        if ([u isKindOfClass:[NSString class]]) s = u;
+                        else if ([u isKindOfClass:[NSURL class]]) s = [(NSURL *)u absoluteString];
+                        else s = TTGGetValue(u, @"url");
+                        if (s && [s hasPrefix:@"http"]) { [imageURLs addObject:s]; break; }
+                    }
+                }
+            }
+            // 视频片段（实况的视频部分）
+            id video = TTGGetValue(img, @"video");
+            if (video) {
+                for (NSString *listKey in @[@"originURLList", @"urlList", @"urls"]) {
+                    NSArray *list = TTGGetValue(video, listKey);
+                    if ([list isKindOfClass:[NSArray class]]) {
+                        for (id u in list) {
+                            NSString *s = nil;
+                            if ([u isKindOfClass:[NSString class]]) s = u;
+                            else if ([u isKindOfClass:[NSURL class]]) s = [(NSURL *)u absoluteString];
+                            else s = TTGGetValue(u, @"url");
+                            if (s && [s hasPrefix:@"http"]) { [videoURLs addObject:s]; break; }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (imageURLs.count == 0) { TTGShowToast(@"❌ 没找到图片"); return; }
+
+        // 如果没有视频片段，就是普通图片（不是实况）
+        if (videoURLs.count == 0) {
+            TTGShowToast(@"⚠️ 这张不是实况，改存普通图片");
+            TTGDownloadImage();
+            return;
+        }
+
+        TTGShowToast([NSString stringWithFormat:@"⏳ 保存 %lu 张实况中...", (unsigned long)imageURLs.count]);
+
+        [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
+            if (status != PHAuthorizationStatusAuthorized) { TTGShowToast(@"❌ 没相册权限"); return; }
+
+            dispatch_group_t group = dispatch_group_create();
+            __block int okCount = 0;
+
+            for (int i = 0; i < (int)imageURLs.count && i < (int)videoURLs.count; i++) {
+                dispatch_group_enter(group);
+
+                // 下载图片 + 视频
+                NSString *docDir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ttg_live"];
+                [[NSFileManager defaultManager] createDirectoryAtPath:docDir withIntermediateDirectories:YES attributes:nil error:nil];
+                NSString *imgPath = [docDir stringByAppendingPathComponent:[NSString stringWithFormat:@"live_%d.jpg", i]];
+                NSString *vidPath = [docDir stringByAppendingPathComponent:[NSString stringWithFormat:@"live_%d.mov", i]];
+
+                // 先下图片
+                TTGBareDownload(imageURLs[i], [NSURL fileURLWithPath:imgPath], ^(BOOL imgOk, NSError *imgErr) {
+                    if (!imgOk) { dispatch_group_leave(group); return; }
+                    // 再下视频
+                    TTGBareDownload(videoURLs[i], [NSURL fileURLWithPath:vidPath], ^(BOOL vidOk, NSError *vidErr) {
+                        if (!vidOk) { dispatch_group_leave(group); return; }
+                        // 合成为 Live Photo
+                        NSURL *imgURL = [NSURL fileURLWithPath:imgPath];
+                        NSURL *vidURL = [NSURL fileURLWithPath:vidPath];
+
+                        [[PHPhotoLibrary sharedPhotoLibrary] performChanges:^{
+                            PHAssetCreationRequest *req = [PHAssetCreationRequest creationRequestForAsset];
+                            [req addResourceWithType:PHAssetResourceTypePhoto fileURL:imgURL options:nil];
+                            [req addResourceWithType:PHAssetResourceTypePairedVideo fileURL:vidURL options:nil];
+                        } completionHandler:^(BOOL saveOk, NSError *saveErr) {
+                            if (saveOk) { okCount++; NSLog(@"[TTG] 📸 ✅ 第 %d 张实况保存成功", i+1); }
+                            else NSLog(@"[TTG] 📸 ❌ 第 %d 张实况保存失败: %@", i+1, saveErr);
+                            dispatch_group_leave(group);
+                        }];
+                    });
+                });
+            }
+
+            dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+                if (okCount > 0) TTGShowToast([NSString stringWithFormat:@"✅ 已保存 %d 张实况", okCount]);
+                else TTGShowToast(@"❌ 实况保存失败（API 限制或不是真实况）");
+            });
+        }];
+    } @catch (NSException *e) {
+        NSLog(@"[TTG] save livephoto err: %@", e);
+        TTGShowToast(@"❌ 保存出错");
+    }
 }
 
 #pragma mark - Constructor
