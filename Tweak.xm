@@ -1328,12 +1328,18 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
         if (_panelShowing) { NSLog(@"[TTG] 🔒 面板已在显示 → 忽略双指"); return; }
         _panelShowing = YES;
         NSLog(@"[TTG] ✅ ✌️ 双指长按 BEGAN → 弹设置面板");
+
+        // 关键：present TTGSettingsViewController 之前先 disable 所有 window 上的长按手势！
+        // 任何 UILongPressGestureRecognizer 的存在都会干扰底下子视图的触摸路由！
+        TTGSetWindowLongPressEnabled(NO);
+        NSLog(@"[TTG] ✋ window 长按手势已 disabled → 设置面板 present");
+
         UIViewController *topVC = TTGTopVC();
-        if (!topVC) { _panelShowing = NO; return; }
+        if (!topVC) { _panelShowing = NO; TTGSetWindowLongPressEnabled(YES); return; }
         Class cls = NSClassFromString(@"TTGSettingsViewController");
-        if (!cls) { _panelShowing = NO; NSLog(@"[TTG] ❌ TTGSettingsViewController 未找到"); return; }
+        if (!cls) { _panelShowing = NO; TTGSetWindowLongPressEnabled(YES); return; }
         UIViewController *vc = [[cls alloc] init];
-        if (!vc) { _panelShowing = NO; return; }
+        if (!vc) { _panelShowing = NO; TTGSetWindowLongPressEnabled(YES); return; }
         vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
         vc.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
         vc.view.alpha = 0;
@@ -2030,7 +2036,11 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (void)dismissSelf {
-    [self dismissViewControllerAnimated:YES completion:nil];
+    [self dismissViewControllerAnimated:YES completion:^{
+        // 关键：恢复 window 上的长按手势！
+        TTGSetWindowLongPressEnabled(YES);
+        NSLog(@"[TTG] ✋ window 长按手势已 enabled → 设置面板 dismiss 完成");
+    }];
 }
 
 - (void)toggleAllOn {
