@@ -72,10 +72,8 @@ static void TTGShowToast(NSString *msg) {
         toast.layer.shadowRadius = 10;
         toast.clipsToBounds = NO;
 
-        // 磨砂背景
-        UIBlurEffectStyle bs;
-        if (@available(iOS 13.0, *)) bs = UIBlurEffectStyleSystemMaterial;
-        else bs = UIBlurEffectStyleLight;
+        // 磨砂背景（跟悬浮按钮/设置面板统一用 Light 磨砂玻璃）
+        UIBlurEffectStyle bs = UIBlurEffectStyleLight;
         UIBlurEffect *blur = [UIBlurEffect effectWithStyle:bs];
         UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blur];
         blurView.frame = CGRectMake(0, 0, w, h);
@@ -847,8 +845,8 @@ __attribute__((constructor)) static void TTGInit(void) {
             UIWindow *win = TTGFrontmostWindow();
             if (!win) { NSLog(@"[TTG] ❌ 没找到 window"); return; }
 
-            CGFloat startY = 80;
-            if (@available(iOS 11.0, *)) startY = 80 + win.safeAreaInsets.top + 34;
+            CGFloat startY = 110;
+            if (@available(iOS 11.0, *)) startY = 110 + win.safeAreaInsets.top + 34;
 
             TTGFloatingButton *btn = [[TTGFloatingButton alloc] initWithFrame:CGRectMake(0, startY, 44, 44)];
             [win addSubview:btn];
