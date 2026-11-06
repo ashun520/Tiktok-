@@ -101,7 +101,7 @@ static NSInteger _ttg_global_touch_count = 0;
 @end
 
 // 单指长按：完全自研 + 零 super + swizzle 全局 touch 计数检测多指
-@interface TTGSinglePressRecognizer : UILongPressGestureRecognizer {
+@interface TTGSinglePressRecognizer : UILongPressGestureRecognizer <UIGestureRecognizerDelegate> {
     dispatch_block_t _ttg_timer_block;
     CGPoint _ttg_startPoint;
     BOOL _ttg_fired;
@@ -112,6 +112,40 @@ static NSInteger _ttg_global_touch_count = 0;
 
 #define TTG_SINGLE_DELAY      0.40
 #define TTG_SINGLE_MOVE_LIMIT 25.0
+
+// 关键：如果触摸点在评论区(UITableView)、搜索框(UITextField)、按钮(UIButton)等非视频区域 → 不接收触摸
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
+    UIView *hitView = touch.view; // touch 所在的最内层 view
+    UIView *v = hitView;
+    while (v) {
+        NSString *cls = NSStringFromClass([v class]);
+        // 评论列表 / 搜索列表 / 任何 scrollView 容器（除了视频播放器可能内部的）
+        if ([v isKindOfClass:[UITableView class]] ||
+            [v isKindOfClass:[UICollectionView class]]) {
+            NSLog(@"[TTG] 👆 忽略 — 触摸在 UITableView/UICollectionView(%@) 里", cls);
+            return NO;
+        }
+        // 搜索框 / 输入框
+        if ([v isKindOfClass:[UITextField class]] ||
+            [v isKindOfClass:[UITextView class]]) {
+            NSLog(@"[TTG] 👆 忽略 — 触摸在文本框里");
+            return NO;
+        }
+        // 按钮（点赞/评论/分享/关注等所有按钮）
+        if ([v isKindOfClass:[UIButton class]]) {
+            NSLog(@"[TTG] 👆 忽略 — 触摸在 UIButton 里");
+            return NO;
+        }
+        // 导航栏 / 标签栏
+        if ([v isKindOfClass:[UINavigationBar class]] ||
+            [v isKindOfClass:[UITabBar class]]) {
+            NSLog(@"[TTG] 👆 忽略 — 触摸在导航/标签栏里");
+            return NO;
+        }
+        v = v.superview;
+    }
+    return YES;
+}
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     if (touches.count != 1) {
@@ -1288,6 +1322,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     if (!hasSingle) {
         TTGSinglePressRecognizer *single = [[TTGSinglePressRecognizer alloc]
             initWithTarget:[TTGLongPressHandler shared] action:@selector(handleSingleLongPress:)];
+        single.delegate = single;  // 自己当自己的 delegate → shouldReceiveTouch 过滤非视频区域
         single.minimumPressDuration = 999.0;  // 让 super 的 timer 永不触发，我们有自研的
         single.numberOfTouchesRequired = 1;
         single.allowableMovement = 25;
@@ -1295,7 +1330,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         single.delaysTouchesBegan = NO;
         single.delaysTouchesEnded = NO;
         [win addGestureRecognizer:single];
-        NSLog(@"[TTG] ✋ 单指长按手势已装到 window");
+        NSLog(@"[TTG] ✋ 单指长按手势已装到 window (delegate=self 过滤评论区)");
     }
 
     if (!hasDouble) {
@@ -2023,25 +2058,34 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     NSDictionary *row = _rows[indexPath.row];
     NSString *action = row[@"action"];
+    if (!action) return;
+
+    UIViewController *topVC = TTGTopVC();
+    if (!topVC) return;
+
+    UIViewController *vc = nil;
     if ([action isEqualToString:@"region"]) {
-        TTGRegionPickerViewController *picker = [[TTGRegionPickerViewController alloc] init];
-        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:picker];
-        nav.navigationBar.tintColor = [UIColor systemBlueColor];
-        [self presentViewController:nav animated:YES completion:nil];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self->_tableView reloadData];
-        });
+        vc = [[TTGRegionPickerViewController alloc] init];
     } else if ([action isEqualToString:@"tabbar"]) {
-        TTGTabBarSettingsViewController *vc = [[TTGTabBarSettingsViewController alloc] init];
-        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-        nav.navigationBar.tintColor = [UIColor systemBlueColor];
-        [self presentViewController:nav animated:YES completion:nil];
+        vc = [[TTGTabBarSettingsViewController alloc] init];
     } else if ([action isEqualToString:@"topbar"]) {
-        TTGTopBarSettingsViewController *vc = [[TTGTopBarSettingsViewController alloc] init];
-        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-        nav.navigationBar.tintColor = [UIColor systemBlueColor];
-        [self presentViewController:nav animated:YES completion:nil];
+        vc = [[TTGTopBarSettingsViewController alloc] init];
     }
+    if (!vc) return;
+
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    nav.navigationBar.tintColor = [UIColor systemBlueColor];
+    nav.modalPresentationStyle = UIModalPresentationOverFullScreen;
+    nav.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
+    nav.view.alpha = 0;
+
+    // 关键：present 到真正的 topVC（TikTok 主界面）上，而不是 self（OverFullScreen 覆盖层）
+    // 否则 iOS 转场上下文可能不正确，导致新 VC 里的触摸事件失效
+    [topVC presentViewController:nav animated:NO completion:^{
+        [UIView animateWithDuration:0.25 animations:^{
+            nav.view.alpha = 1;
+        }];
+    }];
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
