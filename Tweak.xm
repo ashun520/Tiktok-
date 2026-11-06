@@ -57,9 +57,10 @@ static void TTGDisableAllChildLongPresses(void) {
     } @catch (NSException *e) {}
 }
 
-// 单指长按：完全自研，完全不调 super 的 touches，彻底绕开 iOS 手势系统的任何干扰
+// 单指长按：自研 timer + 主动轮询 touch count（不依赖 iOS 手势路由 touchesAdded）
 @interface TTGSinglePressRecognizer : UILongPressGestureRecognizer {
-    dispatch_block_t _ttg_timer_block;
+    dispatch_block_t _ttg_timer_block;   // 0.4s 到点 Began
+    dispatch_block_t _ttg_poll_block;    // 30ms 轮询 touch count
     CGPoint _ttg_startPoint;
     BOOL _ttg_fired;
 }
@@ -69,16 +70,23 @@ static void TTGDisableAllChildLongPresses(void) {
 
 #define TTG_SINGLE_DELAY      0.40
 #define TTG_SINGLE_MOVE_LIMIT 25.0
-#define TTG_SUPER_TIMEOUT     999.0  // super 的 timer 永不触发（我们用自研的）
+#define TTG_SUPER_TIMEOUT     999.0
+#define TTG_POLL_INTERVAL     0.03   // 每 30ms 轮询一次 touch count
 
-// ========== touchesBegan ==========
-// 先把 super 的 minimumPressDuration 设成 999s（让 super 的 timer 永不竞争）
-// 然后调 super.touchesBegan —— 必须调！iOS 手势系统靠这个知道我们在 tracking touches，
-// 否则后续 touchesAdded/Removed/Moved 可能不会被调给我们！
-// 最后启动自研 0.4s timer，到点直接 Began。
+// ========== 从 iOS 内部 ivar 读当前 touches 数量（绝对可靠，不依赖 iOS 手势路由） ==========
+- (NSUInteger)_ttg_touchCount {
+    static Ivar touchesIvar = NULL;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        touchesIvar = class_getInstanceVariable([UIGestureRecognizer class], "_touches");
+    });
+    if (!touchesIvar) return 0;
+    NSSet *t = object_getIvar(self, touchesIvar);
+    return t.count;
+}
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    // 多指 → 直接 Fail，不启动 timer
+    // 多指 → 直接 Fail
     if (touches.count != 1) {
         self.state = UIGestureRecognizerStateFailed;
         [super touchesBegan:touches withEvent:event];
@@ -89,36 +97,52 @@ static void TTGDisableAllChildLongPresses(void) {
     _ttg_startPoint = [touch locationInView:self.view];
     _ttg_fired = NO;
     
-    NSLog(@"[TTG] 👆 touchesBegan(1指) → 禁用子视图长按 → 自研 timer %.2fs", TTG_SINGLE_DELAY);
+    NSLog(@"[TTG] 👆 touchesBegan(1指) → 自研 timer %.2fs + 轮询", TTG_SINGLE_DELAY);
     
-    // 关键：先把 super 的 timer 设成永不触发
     self.minimumPressDuration = TTG_SUPER_TIMEOUT;
-    
-    // 必须调 super —— iOS 手势系统靠这个 tracking touches，才能正确调 touchesAdded 等
     [super touchesBegan:touches withEvent:event];
-    
-    // 立即禁用所有子视图上的 UILongPressGestureRecognizer
     TTGDisableAllChildLongPresses();
     
-    // 自研 timer：到点 Began
     __weak typeof(self) weakSelf = self;
+    
+    // ==== 轮询 block：每 30ms 查 touch count ====
+    __block dispatch_block_t pollBlock = nil;
+    pollBlock = dispatch_block_create((dispatch_block_flags_t)0, ^{
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || self->_ttg_fired) return;
+        if (self.state != UIGestureRecognizerStatePossible) return;
+        
+        NSUInteger tc = [self _ttg_touchCount];
+        if (tc != 1) {
+            NSLog(@"[TTG] 👆 poll 检测到 touches.count=%lu → cancel timer + Fail", (unsigned long)tc);
+            [self _ttg_cancelTimer];
+            [self _ttg_cancelPoll];
+            self.state = UIGestureRecognizerStateFailed;
+            return;
+        }
+        // 继续轮询（timer 到点后会 cancel 自己和 poll）
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(TTG_POLL_INTERVAL * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), pollBlock);
+    });
+    _ttg_poll_block = pollBlock;
+    // 50ms 后开始第一次轮询（等 touchesBegan 完）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), pollBlock);
+    
+    // ==== 主 timer：0.4s 到点 Began ====
     _ttg_timer_block = dispatch_block_create((dispatch_block_flags_t)0, ^{
         __strong typeof(weakSelf) self = weakSelf;
-        if (!self) return;
-        if (self->_ttg_fired) return;
+        if (!self || self->_ttg_fired) return;
         if (self.state != UIGestureRecognizerStatePossible) return;
-        // 保险：timer 到点时如果已经 Failed/Cancelled 了就不触发
-        // （touchesAdded 会在 timer 之前 cancel 我们的 timer 或 Fail 我们的 state）
         self->_ttg_fired = YES;
-        NSLog(@"[TTG] ✅ 👆 自研 timer 到点 → state = Began");
+        [self _ttg_cancelPoll];
+        NSLog(@"[TTG] ✅ 👆 timer 到点 → state = Began");
         self.state = UIGestureRecognizerStateBegan;
     });
-    
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(TTG_SINGLE_DELAY * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), _ttg_timer_block);
 }
 
-// ========== 手指移动 → 超范围 cancel timer + Fail ==========
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     if (!_ttg_fired) {
         UITouch *touch = touches.anyObject;
@@ -128,6 +152,7 @@ static void TTGDisableAllChildLongPresses(void) {
         CGFloat maxD = TTG_SINGLE_MOVE_LIMIT + 2;
         if ((dx*dx + dy*dy) > maxD*maxD) {
             [self _ttg_cancelTimer];
+            [self _ttg_cancelPoll];
             NSLog(@"[TTG] 👆 touchesMoved 超范围 → Fail");
             self.state = UIGestureRecognizerStateFailed;
         }
@@ -135,23 +160,19 @@ static void TTGDisableAllChildLongPresses(void) {
     [super touchesMoved:touches withEvent:event];
 }
 
-// ========== 第二指按下 → cancel 单指 timer + Fail ==========
-// 这是关键修复！因为我们调了 super.touchesBegan，iOS 手势系统
-// 正确把我们当作 tracking 状态，所以第二指 down 时一定会调 touchesAdded
 - (void)touchesAdded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    NSLog(@"[TTG] 👆 touchesAdded(+%lu) → cancel 单指 timer + Fail", (unsigned long)touches.count);
-    [self _ttg_cancelTimer];
-    self.state = UIGestureRecognizerStateFailed;
+    // 轮询已经覆盖了多指检测，这里只是日志
+    NSLog(@"[TTG] 👆 touchesAdded (保险)");
 }
 
-// ========== 手指离开 ==========
 - (void)touchesRemoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    // 不需要做什么，timer 已经在 touchesEnded/Cancelled 里被管了
+    // 不需要做什么，timer 已经在 Ended/Cancelled 里被管了
 }
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     NSLog(@"[TTG] 👆 touchesEnded → fired=%d", _ttg_fired);
     [self _ttg_cancelTimer];
+    [self _ttg_cancelPoll];
     if (_ttg_fired) self.state = UIGestureRecognizerStateEnded;
     else self.state = UIGestureRecognizerStateFailed;
     [super touchesEnded:touches withEvent:event];
@@ -160,6 +181,7 @@ static void TTGDisableAllChildLongPresses(void) {
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     NSLog(@"[TTG] 👆 touchesCancelled → Fail");
     [self _ttg_cancelTimer];
+    [self _ttg_cancelPoll];
     self.state = UIGestureRecognizerStateCancelled;
     [super touchesCancelled:touches withEvent:event];
 }
@@ -167,8 +189,8 @@ static void TTGDisableAllChildLongPresses(void) {
 - (void)reset {
     NSLog(@"[TTG] 👆 reset");
     [self _ttg_cancelTimer];
+    [self _ttg_cancelPoll];
     _ttg_fired = NO;
-    // reset 时恢复默认 duration（不影响什么，下次 touchesBegan 还会设成 999）
     [super reset];
 }
 
@@ -176,6 +198,12 @@ static void TTGDisableAllChildLongPresses(void) {
     if (_ttg_timer_block) {
         dispatch_block_cancel(_ttg_timer_block);
         _ttg_timer_block = nil;
+    }
+}
+- (void)_ttg_cancelPoll {
+    if (_ttg_poll_block) {
+        dispatch_block_cancel(_ttg_poll_block);
+        _ttg_poll_block = nil;
     }
 }
 
