@@ -57,10 +57,50 @@ static void TTGDisableAllChildLongPresses(void) {
     } @catch (NSException *e) {}
 }
 
-// 单指长按：完全自研 + 不调任何 super + 轮询 window.touches 检测多指
+// 全局 touch 计数器（通过 swizzle UIWindow.sendEvent 维护）
+static NSInteger _ttg_global_touch_count = 0;
+
+@interface UIWindow (TTGSendEventSwizzle)
+@end
+
+@implementation UIWindow (TTGSendEventSwizzle)
++ (void)load {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Class cls = [UIWindow class];
+        SEL originalSel = @selector(sendEvent:);
+        SEL swizzledSel = @selector(ttg_sendEvent:);
+        Method original = class_getInstanceMethod(cls, originalSel);
+        Method swizzled = class_getInstanceMethod(cls, swizzledSel);
+        method_exchangeImplementations(original, swizzled);
+    });
+}
+- (void)ttg_sendEvent:(UIEvent *)event {
+    if (event.type == UIEventTypeTouches) {
+        NSSet *allTouches = [event valueForKey:@"allTouches"];
+        UITouch *anyTouch = allTouches.anyObject;
+        if (anyTouch.phase == UITouchPhaseBegan) {
+            // 新增：allTouches 数量就是新 down 的 touch 数
+            // 但 allTouches 也可能包含没移动的旧 touch，所以用 global + 1/-1 增量
+            if (_ttg_global_touch_count < (NSInteger)allTouches.count) {
+                _ttg_global_touch_count = allTouches.count;
+            }
+        } else if (anyTouch.phase == UITouchPhaseEnded || anyTouch.phase == UITouchPhaseCancelled) {
+            // 结束：allTouches 里不包含结束的 touch，所以直接 allTouches.count 就是剩余数
+            _ttg_global_touch_count = allTouches.count;
+        } else {
+            // Moved/Stationary → 全局 count 就是 allTouches.count
+            _ttg_global_touch_count = allTouches.count;
+        }
+        NSLog(@"[TTG] 🌐 sendEvent phase=%ld → total_touches=%ld", (long)anyTouch.phase, (long)_ttg_global_touch_count);
+    }
+    [self ttg_sendEvent:event];
+}
+@end
+
+// 单指长按：完全自研 + 零 super + swizzle 全局 touch 计数检测多指
 @interface TTGSinglePressRecognizer : UILongPressGestureRecognizer {
-    dispatch_block_t _ttg_timer_block;   // 0.4s 主 timer
-    dispatch_block_t _ttg_poll_block;    // 30ms 轮询 timer
+    dispatch_block_t _ttg_timer_block;
     CGPoint _ttg_startPoint;
     BOOL _ttg_fired;
 }
@@ -70,19 +110,10 @@ static void TTGDisableAllChildLongPresses(void) {
 
 #define TTG_SINGLE_DELAY      0.40
 #define TTG_SINGLE_MOVE_LIMIT 25.0
-#define TTG_POLL_INTERVAL     0.03
-
-// 读全局 touch 数（用 KVC 读 UIWindow.touches，绕过头文件声明问题）
-- (NSUInteger)_ttg_touchCount {
-    UIWindow *win = (UIWindow *)self.view;
-    if (!win) win = [UIApplication sharedApplication].keyWindow;
-    NSSet *touches = [win valueForKey:@"touches"];
-    return touches.count;
-}
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     if (touches.count != 1) {
-        NSLog(@"[TTG] 👆 touchesBegan(count=%lu≠1) → 直接 Fail", (unsigned long)touches.count);
+        NSLog(@"[TTG] 👆 touchesBegan(count=%lu≠1) → Fail", (unsigned long)touches.count);
         self.state = UIGestureRecognizerStateFailed;
         return;
     }
@@ -91,41 +122,22 @@ static void TTGDisableAllChildLongPresses(void) {
     _ttg_startPoint = [touch locationInView:self.view];
     _ttg_fired = NO;
     
-    NSLog(@"[TTG] 👆 touchesBegan(1指) → timer %.2fs + 轮询 window.touches", TTG_SINGLE_DELAY);
+    NSLog(@"[TTG] 👆 touchesBegan(1指) → timer %.2fs", TTG_SINGLE_DELAY);
     TTGDisableAllChildLongPresses();
     
     __weak typeof(self) weakSelf = self;
-    
-    // ===== 轮询：每 30ms 检查 window.touches.count =====
-    __block dispatch_block_t pollBlock = nil;
-    pollBlock = dispatch_block_create((dispatch_block_flags_t)0, ^{
-        __strong typeof(weakSelf) self = weakSelf;
-        if (!self || self->_ttg_fired) return;
-        if (self.state != UIGestureRecognizerStatePossible) return;
-        
-        NSUInteger tc = [self _ttg_touchCount];
-        if (tc != 1) {
-            NSLog(@"[TTG] 👆 poll 发现 window.touches.count=%lu → cancel + Fail", (unsigned long)tc);
-            [self _ttg_cancelAll];
-            self.state = UIGestureRecognizerStateFailed;
-            return;
-        }
-        // 继续轮询
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(TTG_POLL_INTERVAL * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), pollBlock);
-    });
-    _ttg_poll_block = pollBlock;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), pollBlock);
-    
-    // ===== 主 timer：0.4s 到点 Began =====
     _ttg_timer_block = dispatch_block_create((dispatch_block_flags_t)0, ^{
         __strong typeof(weakSelf) self = weakSelf;
         if (!self || self->_ttg_fired) return;
         if (self.state != UIGestureRecognizerStatePossible) return;
+        // 最终保险：全局 touch 数必须还是 1
+        if (_ttg_global_touch_count != 1) {
+            NSLog(@"[TTG] 👆 timer 到点但全局 touches=%ld≠1 → Fail", (long)_ttg_global_touch_count);
+            self.state = UIGestureRecognizerStateFailed;
+            return;
+        }
         self->_ttg_fired = YES;
-        [self _ttg_cancelPoll];
-        NSLog(@"[TTG] ✅ 👆 timer 到点 → state = Began");
+        NSLog(@"[TTG] ✅ 👆 timer 到点 → Began");
         self.state = UIGestureRecognizerStateBegan;
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(TTG_SINGLE_DELAY * NSEC_PER_SEC)),
@@ -140,7 +152,7 @@ static void TTGDisableAllChildLongPresses(void) {
     CGFloat dy = p.y - _ttg_startPoint.y;
     CGFloat maxD = TTG_SINGLE_MOVE_LIMIT + 2;
     if ((dx*dx + dy*dy) > maxD*maxD) {
-        [self _ttg_cancelAll];
+        [self _ttg_cancelTimer];
         NSLog(@"[TTG] 👆 touchesMoved 超范围 → Fail");
         self.state = UIGestureRecognizerStateFailed;
     }
@@ -148,33 +160,29 @@ static void TTGDisableAllChildLongPresses(void) {
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     NSLog(@"[TTG] 👆 touchesEnded → fired=%d", _ttg_fired);
-    [self _ttg_cancelAll];
+    [self _ttg_cancelTimer];
     if (_ttg_fired) self.state = UIGestureRecognizerStateEnded;
     else self.state = UIGestureRecognizerStateFailed;
 }
 
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     NSLog(@"[TTG] 👆 touchesCancelled");
-    [self _ttg_cancelAll];
+    [self _ttg_cancelTimer];
     self.state = UIGestureRecognizerStateCancelled;
 }
 
 - (void)reset {
     NSLog(@"[TTG] 👆 reset");
-    [self _ttg_cancelAll];
+    [self _ttg_cancelTimer];
     _ttg_fired = NO;
     [super reset];
 }
 
-- (void)_ttg_cancelAll {
-    [self _ttg_cancelTimer];
-    [self _ttg_cancelPoll];
-}
 - (void)_ttg_cancelTimer {
-    if (_ttg_timer_block) { dispatch_block_cancel(_ttg_timer_block); _ttg_timer_block = nil; }
-}
-- (void)_ttg_cancelPoll {
-    if (_ttg_poll_block) { dispatch_block_cancel(_ttg_poll_block); _ttg_poll_block = nil; }
+    if (_ttg_timer_block) {
+        dispatch_block_cancel(_ttg_timer_block);
+        _ttg_timer_block = nil;
+    }
 }
 
 @end
@@ -932,7 +940,9 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
 }
 @end
 
-@implementation TTGLongPressHandler
+@implementation TTGLongPressHandler {
+    BOOL _panelShowing;
+}
 + (instancetype)shared {
     static TTGLongPressHandler *inst;
     static dispatch_once_t once;
@@ -943,30 +953,46 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
 // 单指长按 → 动作面板
 - (void)handleSingleLongPress:(UILongPressGestureRecognizer *)gr {
     if (gr.state == UIGestureRecognizerStateBegan) {
+        if (_panelShowing) { NSLog(@"[TTG] 🔒 面板已在显示 → 忽略单指"); return; }
+        _panelShowing = YES;
         NSLog(@"[TTG] ✅ 👆 单指长按 BEGAN → 弹动作面板");
         TTGActionPanelView *panel = [[TTGActionPanelView alloc] init];
         [panel show];
+    }
+    if (gr.state == UIGestureRecognizerStateEnded || gr.state == UIGestureRecognizerStateCancelled || gr.state == UIGestureRecognizerStateFailed) {
+        // 等手势结束时解锁（最保守安全）
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            self->_panelShowing = NO;
+        });
     }
 }
 
 // 双指长按 → 设置面板
 - (void)handleDoubleLongPress:(UILongPressGestureRecognizer *)gr {
-    if (gr.state != UIGestureRecognizerStateBegan) return;
-    NSLog(@"[TTG] ✅ ✌️ 双指长按 BEGAN → 弹设置面板");
-    UIViewController *topVC = TTGTopVC();
-    if (!topVC) return;
-    Class cls = NSClassFromString(@"TTGSettingsViewController");
-    if (!cls) { NSLog(@"[TTG] ❌ TTGSettingsViewController 未找到"); return; }
-    UIViewController *vc = [[cls alloc] init];
-    if (!vc) return;
-    vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
-    vc.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
-    vc.view.alpha = 0;
-    [topVC presentViewController:vc animated:NO completion:^{
-        [UIView animateWithDuration:0.2 animations:^{
-            vc.view.alpha = 1;
+    if (gr.state == UIGestureRecognizerStateBegan) {
+        if (_panelShowing) { NSLog(@"[TTG] 🔒 面板已在显示 → 忽略双指"); return; }
+        _panelShowing = YES;
+        NSLog(@"[TTG] ✅ ✌️ 双指长按 BEGAN → 弹设置面板");
+        UIViewController *topVC = TTGTopVC();
+        if (!topVC) { _panelShowing = NO; return; }
+        Class cls = NSClassFromString(@"TTGSettingsViewController");
+        if (!cls) { _panelShowing = NO; NSLog(@"[TTG] ❌ TTGSettingsViewController 未找到"); return; }
+        UIViewController *vc = [[cls alloc] init];
+        if (!vc) { _panelShowing = NO; return; }
+        vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
+        vc.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
+        vc.view.alpha = 0;
+        [topVC presentViewController:vc animated:NO completion:^{
+            [UIView animateWithDuration:0.2 animations:^{
+                vc.view.alpha = 1;
+            }];
         }];
-    }];
+    }
+    if (gr.state == UIGestureRecognizerStateEnded || gr.state == UIGestureRecognizerStateCancelled || gr.state == UIGestureRecognizerStateFailed) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            self->_panelShowing = NO;
+        });
+    }
 }
 
 @end
