@@ -51,10 +51,10 @@
 @end
 
 @interface AWEPlayInteractionViewController (TTGInternal)
-- (void)__ttgHideUI:(UIButton *)sender;
-- (void)__ttgDownload:(UIButton *)sender;
-- (void)__ttgPIP:(UIButton *)sender;
-- (void)__ttgUpdateUI;
+- (void)__ttgHideUIAction:(UIButton *)sender;
+- (void)__ttgDownloadAction:(UIButton *)sender;
+- (void)__ttgPIPAction:(UIButton *)sender;
+- (void)__ttgUpdateUICheck;
 @end
 
 @interface AWEMediaDownloadOptions : NSObject

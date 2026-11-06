@@ -1,9 +1,10 @@
 /**
- * TikTok God — LCSign injection port (enhanced, working)
- * Based on haoict/tiktok-god (MIT) — https://github.com/haoict/tiktok-god
+ * TikTok God — LCSign injection port (v3 — %property crash FIXED)
  *
- * Key fix: DO NOT create a separate UIWindow. Add the floating button
- * directly to TikTok's existing UIWindow (the same way Diag.m shows alerts).
+ * Critical fix: REMOVED all %property! logos internal generator uses
+ * class_addIvar for %property, which CRASHES on already-registered
+ * classes (AWEPlayInteractionViewController, AWEFeedContainerViewController).
+ * Replaced with objc_setAssociatedObject (runtime-safe, no class_addIvar).
  */
 
 #include "Tweak.h"
@@ -30,7 +31,7 @@ static AVPictureInPictureController *g_pipController;
 static AVPlayerLayer *g_pipPlayerLayer;
 static AVPlayer *g_pipPlayer;
 
-#pragma mark - Prefs (sandbox plist, NOT /var/mobile)
+#pragma mark - Prefs
 
 static NSString *TTGPrefsPath(void) {
     return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.haoict.tiktokgodpref.plist"];
@@ -60,7 +61,6 @@ static void TTGSavePrefs(void) {
 static void reloadPrefs(void) {
     NSDictionary *s = [[NSMutableDictionary alloc] initWithContentsOfFile:TTGPrefsPath()] ?: @{};
     if (s.allKeys.count == 0) return;
-
     noads = [[s objectForKey:@"noads"] ?: @(YES) boolValue];
     downloadWithoutWatermark = [[s objectForKey:@"downloadWithoutWatermark"] ?: @(YES) boolValue];
     autoPlayNextVideo = [[s objectForKey:@"autoPlayNextVideo"] ?: @(YES) boolValue];
@@ -75,15 +75,34 @@ static void reloadPrefs(void) {
     if (r && r.allKeys.count) region = r;
 }
 
+#pragma mark - Associated object helpers (replace %property — class_addIvar crashes!)
+
+static const void *kIsUIHiddenKey = &kIsUIHiddenKey;
+static const void *kHideUIButtonKey = &kHideUIButtonKey;
+static const void *kDownloadButtonKey = &kDownloadButtonKey;
+static const void *kPipButtonKey = &kPipButtonKey;
+
+static void TTGSetAssoc(id obj, const void *key, id val) {
+    objc_setAssociatedObject(obj, key, val, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+static id TTGGetAssoc(id obj, const void *key) {
+    return objc_getAssociatedObject(obj, key);
+}
+static void TTGSetBoolAssoc(id obj, const void *key, BOOL val) {
+    objc_setAssociatedObject(obj, key, @(val), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+static BOOL TTGGetBoolAssoc(id obj, const void *key) {
+    NSNumber *n = objc_getAssociatedObject(obj, key);
+    return n ? n.boolValue : NO;
+}
+
 #pragma mark - Helpers
 
 static UIImage *TTGIcon(const unsigned char *bytes, unsigned int len) {
     return [UIImage imageWithData:[NSData dataWithBytes:bytes length:len]];
 }
 
-/// Get TikTok's frontmost UIWindow — EXACTLY the same logic as Diag.m (proven working)
 static UIWindow *TTGFrontmostWindow(void) {
-    // iOS 13+ scene path
     if (@available(iOS 13.0, *)) {
         Class WSCls = NSClassFromString(@"UIWindowScene");
         if (WSCls) {
@@ -96,7 +115,6 @@ static UIWindow *TTGFrontmostWindow(void) {
                     if (windows.firstObject) return windows.firstObject;
                 }
             }
-            // Fallback: any scene with windows
             for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
                 if ([scene isKindOfClass:WSCls]) {
                     NSArray *windows = [(id)scene windows];
@@ -105,7 +123,6 @@ static UIWindow *TTGFrontmostWindow(void) {
             }
         }
     }
-    // Pre-iOS 13
     UIWindow *kw = [UIApplication sharedApplication].keyWindow;
     if (kw) return kw;
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
@@ -115,7 +132,7 @@ static UIWindow *TTGFrontmostWindow(void) {
 }
 
 static UIViewController *TTGTopViewController(UIWindow *win) {
-    UIViewController *vc = win.rootViewController ?: [UIApplication sharedApplication].delegate.window.rootViewController;
+    UIViewController *vc = win.rootViewController;
     while (vc.presentedViewController) vc = vc.presentedViewController;
     return vc;
 }
@@ -135,34 +152,28 @@ static NSString *TTGGetVideoURL(AWEVideoModel *video) {
     NSArray *dlList = video.downloadURL.originURLList;
     NSString *dlURL = (NSString *)dlList.firstObject;
     if (dlURL.length > 0) return dlURL;
-
     NSArray *plList = video.playURL.originURLList;
     NSString *plURL = (NSString *)plList.firstObject;
     if (plURL.length > 0) return plURL;
-
     return nil;
 }
 
-#pragma mark - Native downloader (replaces libhdev)
+#pragma mark - Native downloader
 
 @interface TTGDownloader : NSObject <NSURLSessionDownloadDelegate>
 @property (nonatomic, copy) void (^onProgress)(double);
 @property (nonatomic, copy) void (^onDone)(BOOL, NSString *);
-- (void)downloadURLString:(NSString *)urlString;
 @end
 
 @implementation TTGDownloader
-
 - (void)downloadURLString:(NSString *)urlString {
     NSURL *url = [NSURL URLWithString:urlString];
     if (!url) { if (self.onDone) self.onDone(NO, @"Invalid URL"); return; }
     [[[NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration] delegate:self delegateQueue:nil] downloadTaskWithURL:url] resume];
 }
-
 - (void)URLSession:(NSURLSession *)s downloadTask:(NSURLSessionDownloadTask *)t didWriteData:(int64_t)bw totalBytesWritten:(int64_t)tw totalBytesExpectedToWrite:(int64_t)te {
     if (te > 0 && self.onProgress) dispatch_async(dispatch_get_main_queue(), ^{ self.onProgress((double)tw / (double)te); });
 }
-
 - (void)URLSession:(NSURLSession *)s downloadTask:(NSURLSessionDownloadTask *)t didFinishDownloadingToURL:(NSURL *)location {
     NSString *destPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ttg_video.mp4"];
     NSURL *dest = [NSURL fileURLWithPath:destPath];
@@ -172,65 +183,45 @@ static NSString *TTGGetVideoURL(AWEVideoModel *video) {
         return;
     }
     __block NSError *saveErr = nil;
-    [[PHPhotoLibrary sharedPhotoLibrary] performChangesAndWait:^{
-        [PHAssetChangeRequest creationRequestForAssetFromVideoAtFileURL:dest];
-    } error:&saveErr];
+    [[PHPhotoLibrary sharedPhotoLibrary] performChangesAndWait:^{ [PHAssetChangeRequest creationRequestForAssetFromVideoAtFileURL:dest]; } error:&saveErr];
     [[NSFileManager defaultManager] removeItemAtURL:dest error:nil];
     if (self.onDone) self.onDone(saveErr == nil, saveErr.localizedDescription ?: nil);
 }
-
 - (void)URLSession:(NSURLSession *)s task:(NSURLSessionTask *)t didCompleteWithError:(NSError *)error {
     if (error && self.onDone) dispatch_async(dispatch_get_main_queue(), ^{ self.onDone(NO, error.localizedDescription); });
 }
 @end
 
-#pragma mark - Picture-in-Picture helper
+#pragma mark - PiP + Background
 
 static void TTGTogglePIP(NSString *videoURL) {
     Class pipCls = NSClassFromString(@"AVPictureInPictureController");
-    if (!pipCls || !videoURL.length) {
-        TTGShowAlert(@"PiP not supported or no video URL", @"PiP", nil);
-        return;
-    }
-
-    if (g_pipController && g_pipController.isPictureInPictureActive) {
-        [g_pipController stopPictureInPicture];
-        return;
-    }
-
+    if (!pipCls || !videoURL.length) { TTGShowAlert(@"PiP not supported", @"PiP", nil); return; }
+    if (g_pipController && g_pipController.isPictureInPictureActive) { [g_pipController stopPictureInPicture]; return; }
     NSURL *url = [NSURL URLWithString:videoURL];
     if (!g_pipPlayer) g_pipPlayer = [AVPlayer playerWithURL:url];
     else { [g_pipPlayer replaceCurrentItemWithPlayerItem:[AVPlayerItem playerItemWithURL:url]]; }
-
     if (!g_pipPlayerLayer) {
         g_pipPlayerLayer = [AVPlayerLayer layer];
         g_pipPlayerLayer.frame = CGRectMake(0, 0, 100, 100);
         UIWindow *win = TTGFrontmostWindow();
-        UIView *host = win.rootViewController.view;
-        if (host) [host.layer addSublayer:g_pipPlayerLayer];
+        [win.rootViewController.view.layer addSublayer:g_pipPlayerLayer];
     }
     g_pipPlayerLayer.player = g_pipPlayer;
-
     if (!g_pipController) g_pipController = [[AVPictureInPictureController alloc] initWithPlayerLayer:g_pipPlayerLayer];
-    if ([AVPictureInPictureController isPictureInPictureSupported]) {
-        [g_pipController startPictureInPicture];
-    } else {
-        TTGShowAlert(@"PiP not supported on this device", @"PiP", nil);
-    }
+    if ([AVPictureInPictureController isPictureInPictureSupported]) [g_pipController startPictureInPicture];
+    else TTGShowAlert(@"PiP not supported on this device", @"PiP", nil);
 }
-
-#pragma mark - Background play helper
 
 static void TTGEnableBackgroundPlay(void) {
     if (!enableBackgroundPlay) return;
     NSError *err = nil;
     [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback
-                                     withOptions:AVAudioSessionCategoryOptionMixWithOthers
-                                           error:&err];
+                                     withOptions:AVAudioSessionCategoryOptionMixWithOthers error:&err];
     [[AVAudioSession sharedInstance] setActive:YES error:&err];
 }
 
-#pragma mark - Settings Button (no separate UIWindow!)
+#pragma mark - Settings Button
 
 static BOOL g_buttonAttached = NO;
 
@@ -252,87 +243,49 @@ static BOOL g_buttonAttached = NO;
         self.layer.shadowOpacity = 0.5;
         self.layer.shadowOffset = CGSizeMake(0, 2);
         self.layer.shadowRadius = 3;
-        self.accessibilityLabel = @"TikTok God";
 
         UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(longPressed:)];
         lp.minimumPressDuration = 0.4;
         [self addGestureRecognizer:lp];
         [self addTarget:self action:@selector(tapped) forControlEvents:UIControlEventTouchUpInside];
-
-        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dragging:)];
-        [self addGestureRecognizer:pan];
+        [self addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dragging:)]];
     }
     return self;
 }
-
-- (void)tapped {
-    if (self.dragging) { self.dragging = NO; return; }
-    [self showPanel];
-}
-
-- (void)longPressed:(UILongPressGestureRecognizer *)g {
-    if (g.state == UIGestureRecognizerStateBegan) [self showPanel];
-}
-
+- (void)tapped { if (self.dragging) { self.dragging = NO; return; } [self showPanel]; }
+- (void)longPressed:(UILongPressGestureRecognizer *)g { if (g.state == UIGestureRecognizerStateBegan) [self showPanel]; }
 - (void)dragging:(UIPanGestureRecognizer *)g {
     UIView *parent = self.superview;
     if (!parent) return;
     CGPoint p = [g translationInView:parent];
-    CGPoint c = self.center;
-    CGPoint newCenter = CGPointMake(c.x + p.x, c.y + p.y);
-
+    CGPoint newCenter = CGPointMake(self.center.x + p.x, self.center.y + p.y);
     CGFloat halfW = self.bounds.size.width / 2.0;
     CGFloat halfH = self.bounds.size.height / 2.0;
     newCenter.x = MAX(halfW + 4, MIN(parent.bounds.size.width - halfW - 4, newCenter.x));
     newCenter.y = MAX(halfH + 50, MIN(parent.bounds.size.height - halfH - 100, newCenter.y));
-
     self.center = newCenter;
     [g setTranslation:CGPointZero inView:parent];
-
-    if (g.state == UIGestureRecognizerStateChanged && (fabs(p.x) > 3 || fabs(p.y) > 3)) {
-        self.dragging = YES;
-    }
+    if (g.state == UIGestureRecognizerStateChanged && (fabs(p.x) > 3 || fabs(p.y) > 3)) self.dragging = YES;
     if (g.state == UIGestureRecognizerStateEnded) {
         CGFloat bx = self.center.x, screenW = parent.bounds.size.width;
         CGFloat snapX = bx < screenW / 2 ? halfW + 14 : screenW - halfW - 14;
-        [UIView animateWithDuration:0.25 animations:^{
-            self.center = CGPointMake(snapX, self.center.y);
-        }];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            self.dragging = NO;
-        });
+        [UIView animateWithDuration:0.25 animations:^{ self.center = CGPointMake(snapX, self.center.y); }];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ self.dragging = NO; });
     }
 }
-
 - (void)showPanel {
     UIWindow *win = TTGFrontmostWindow();
     UIViewController *vc = win ? TTGTopViewController(win) : nil;
-    if (!vc) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self showPanel];
-        });
-        return;
-    }
+    if (!vc) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self showPanel]; }); return; }
 
-    UIAlertController *panel = [UIAlertController alertControllerWithTitle:@"🤖 TikTok God 设置"
-                                                                   message:@"点 ✅/⬜ 切换，点右上角 X 关闭"
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-
+    UIAlertController *panel = [UIAlertController alertControllerWithTitle:@"🤖 TikTok God 设置" message:@"✅ = 开  ⬜ = 关" preferredStyle:UIAlertControllerStyleActionSheet];
     void (^addToggle)(NSString *, BOOL *, BOOL) = ^(NSString *title, BOOL *flag, BOOL restart) {
-        NSString *prefix = *flag ? @"✅ " : @"⬜️ ";
-        NSString *fullTitle = [[prefix stringByAppendingString:title] stringByAppendingString:restart ? @" (需重启)" : @""];
-        UIAlertAction *a = [UIAlertAction actionWithTitle:fullTitle
-                                                     style:UIAlertActionStyleDefault
-                                                   handler:^(UIAlertAction * _Nonnull action) {
-            *flag = !*flag;
-            TTGSavePrefs();
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [self showPanel];
-            });
-        }];
-        [panel addAction:a];
+        NSString *fullTitle = [[(*flag ? @"✅ " : @"⬜️ ") stringByAppendingString:title] stringByAppendingString:restart ? @" (需重启)" : @""];
+        [panel addAction:[UIAlertAction actionWithTitle:fullTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+            *flag = !*flag; TTGSavePrefs();
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self showPanel]; });
+        }]];
     };
-
     addToggle(@"去广告", &noads, NO);
     addToggle(@"无水印下载", &downloadWithoutWatermark, NO);
     addToggle(@"自动连播下一个", &autoPlayNextVideo, NO);
@@ -343,274 +296,171 @@ static BOOL g_buttonAttached = NO;
     addToggle(@"后台继续播放", &enableBackgroundPlay, NO);
     addToggle(@"绕过安全检测", &enableBypass, YES);
     addToggle(@"收藏合集入口", &enableFavoritesCollections, YES);
-
     [panel addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [vc presentViewController:panel animated:YES completion:nil];
 }
 @end
 
-/// Try to attach the settings button to TikTok's frontmost UIWindow — retries until window exists
 static void TTGTryAttachButton(int attempt) {
     if (g_buttonAttached) return;
-    if (attempt > 40) {
-        NSLog(@"[TTG] ⚠️ Gave up attaching button after %d retries", attempt);
-        TTGShowAlert(@"设置按钮创建超时 - 请重启 TikTok", @"TikTok God", nil);
-        return;
-    }
-
+    if (attempt > 40) { NSLog(@"[TTG] ⚠️ Gave up attaching button"); return; }
     UIWindow *win = TTGFrontmostWindow();
     if (!win) {
-        NSLog(@"[TTG] attempt %d: no window yet, retrying...", attempt);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            TTGTryAttachButton(attempt + 1);
-        });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ TTGTryAttachButton(attempt + 1); });
         return;
     }
-
-    // Check button isn't already there
-    for (UIView *v in win.subviews) {
-        if ([v isKindOfClass:[TTGSettingsButton class]]) {
-            g_buttonAttached = YES;
-            NSLog(@"[TTG] Button already attached");
-            return;
-        }
-    }
-
-    CGFloat btnSize = 40;
-    CGFloat startY = 140;
-    if (@available(iOS 11.0, *)) {
-        startY = 50 + win.safeAreaInsets.top + 34; // below notch/status bar
-    }
-    TTGSettingsButton *btn = [[TTGSettingsButton alloc] initWithFrame:CGRectMake(14, startY, btnSize, btnSize)];
+    for (UIView *v in win.subviews) { if ([v isKindOfClass:[TTGSettingsButton class]]) { g_buttonAttached = YES; return; } }
+    CGFloat startY = 50 + win.safeAreaInsets.top + 34;
+    TTGSettingsButton *btn = [[TTGSettingsButton alloc] initWithFrame:CGRectMake(14, startY, 40, 40)];
     btn.autoresizingMask = UIViewAutoresizingFlexibleBottomMargin | UIViewAutoresizingFlexibleRightMargin;
     [win addSubview:btn];
     g_buttonAttached = YES;
-    NSLog(@"[TTG] ✅ Attached floating button to TikTok window on attempt %d", attempt);
+    NSLog(@"[TTG] ✅ Attached floating button on attempt %d", attempt);
 }
 
-#pragma mark - Hooks
+#pragma mark - Hooks (NO %property — that CRASHES on registered classes!)
 
 %group SecurityBypass
 %hook NSFileManager
 - (BOOL)fileExistsAtPath:(NSString *)p {
     if (enableBypass) {
-        static NSArray *bypassPaths = nil;
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            bypassPaths = @[
-                @"/Applications/Cydia.app", @"/Applications/blackra1n.app", @"/Applications/Sileo.app",
-                @"/usr/libexec/cydia/firmware.sh", @"/usr/bin/ssh",
-                @"/Library/MobileSubstrate", @"/Library/TweakInject",
-                @"/.cydia_no_stash", @"/.installed_unc0ver",
-                @"/private/var/lib/cydia", @"/var/lib/cydia",
-                @"/usr/lib/libjailbreak.dylib", @"/jb",
-                @"/etc/apt", @"/var/log/apt", @"/Library/Application Support/Substrate"
-            ];
-        });
+        static NSArray *bypassPaths; static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{ bypassPaths = @[
+            @"/Applications/Cydia.app", @"/Applications/blackra1n.app", @"/Applications/Sileo.app",
+            @"/usr/libexec/cydia/firmware.sh", @"/usr/bin/ssh",
+            @"/Library/MobileSubstrate", @"/Library/TweakInject",
+            @"/.cydia_no_stash", @"/.installed_unc0ver",
+            @"/private/var/lib/cydia", @"/var/lib/cydia",
+            @"/usr/lib/libjailbreak.dylib", @"/jb",
+            @"/etc/apt", @"/var/log/apt", @"/Library/Application Support/Substrate"]; });
         if ([bypassPaths containsObject:p]) return NO;
     }
     return %orig;
 }
-- (BOOL)fileExistsAtPath:(NSString *)p isDirectory:(BOOL *)d {
-    if (enableBypass) {
-        static NSArray *bypassPaths = nil;
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            bypassPaths = @[
-                @"/Applications/Cydia.app", @"/Applications/blackra1n.app", @"/Applications/Sileo.app",
-                @"/usr/libexec/cydia/firmware.sh", @"/usr/bin/ssh",
-                @"/Library/MobileSubstrate", @"/Library/TweakInject",
-                @"/.cydia_no_stash", @"/.installed_unc0ver",
-                @"/private/var/lib/cydia", @"/var/lib/cydia",
-                @"/usr/lib/libjailbreak.dylib", @"/jb",
-                @"/etc/apt", @"/var/log/apt", @"/Library/Application Support/Substrate"
-            ];
-        });
-        if ([bypassPaths containsObject:p]) return NO;
-    }
-    return %orig;
-}
+- (BOOL)fileExistsAtPath:(NSString *)p isDirectory:(BOOL *)d { return [self fileExistsAtPath:p]; }
 %end
 
-%hook BDADeviceHelper
-+(BOOL)isJailBroken { return enableBypass ? NO : %orig; }
-%end
-%hook TTInstallUtil
-+(BOOL)isJailBroken { return enableBypass ? NO : %orig; }
-%end
-%hook IESLiveDeviceInfo
-+(BOOL)isJailBroken { return enableBypass ? NO : %orig; }
-%end
-%hook AppsFlyerUtils
-+(BOOL)isJailBroken { return enableBypass ? NO : %orig; }
-%end
-%hook BDInstallNetworkUtility
-+(BOOL)isJailBroken { return enableBypass ? NO : %orig; }
-%end
-%hook TTAdSplashDeviceHelper
-+(BOOL)isJailBroken { return enableBypass ? NO : %orig; }
-%end
-
-%hook GULAppEnvironmentUtil
-+(BOOL)isFromAppStore { return enableBypass ? YES : %orig; }
-+(BOOL)isAppStoreReceiptSandbox { return enableBypass ? NO : %orig; }
-%end
-
-%hook FBSDKAppEventsUtility
-+(BOOL)isDebugBuild { return enableBypass ? NO : %orig; }
-%end
-
-%hook AWEAPMManager
-+(NSString *)signInfo { return enableBypass ? @"AppStore" : %orig; }
-%end
-
+%hook BDADeviceHelper +(BOOL)isJailBroken { return enableBypass ? NO : %orig; } %end
+%hook TTInstallUtil +(BOOL)isJailBroken { return enableBypass ? NO : %orig; } %end
+%hook IESLiveDeviceInfo +(BOOL)isJailBroken { return enableBypass ? NO : %orig; } %end
+%hook AppsFlyerUtils +(BOOL)isJailBroken { return enableBypass ? NO : %orig; } %end
+%hook BDInstallNetworkUtility +(BOOL)isJailBroken { return enableBypass ? NO : %orig; } %end
+%hook TTAdSplashDeviceHelper +(BOOL)isJailBroken { return enableBypass ? NO : %orig; } %end
+%hook GULAppEnvironmentUtil +(BOOL)isFromAppStore { return enableBypass ? YES : %orig; } +(BOOL)isAppStoreReceiptSandbox { return enableBypass ? NO : %orig; } %end
+%hook FBSDKAppEventsUtility +(BOOL)isDebugBuild { return enableBypass ? NO : %orig; } %end
+%hook AWEAPMManager +(NSString *)signInfo { return enableBypass ? @"AppStore" : %orig; } %end
 %hook NSBundle
-- (NSString *)pathForResource:(NSString *)name ofType:(NSString *)ext {
-    if (enableBypass && [ext isEqualToString:@"mobileprovision"]) return nil;
-    return %orig;
-}
-- (NSData *)dataForResource:(NSString *)name ofType:(NSString *)ext {
-    if (enableBypass && [ext isEqualToString:@"mobileprovision"]) return nil;
-    return %orig;
-}
+- (NSString *)pathForResource:(NSString *)name ofType:(NSString *)ext { if (enableBypass && [ext isEqualToString:@"mobileprovision"]) return nil; return %orig; }
+- (NSData *)dataForResource:(NSString *)name ofType:(NSString *)ext { if (enableBypass && [ext isEqualToString:@"mobileprovision"]) return nil; return %orig; }
 %end
-
-%hook AWESecurity
-- (void)resetCollectMode { if (!enableBypass) %orig; }
+%hook AWESecurity - (void)resetCollectMode { if (!enableBypass) %orig; } %end
 %end
-%end // group SecurityBypass
 
 %group CoreLogic
 
 %hook AWEAwemeModel
-- (id)initWithDictionary:(id)arg1 error:(id *)arg2 {
-    id orig = %orig;
-    if (noads && self.isAds) return nil;
-    return orig;
-}
-- (id)init {
-    id orig = %orig;
-    if (noads && self.isAds) return nil;
-    return orig;
-}
+- (id)initWithDictionary:(id)arg1 error:(id *)arg2 { id orig = %orig; if (noads && self.isAds) return nil; return orig; }
+- (id)init { id orig = %orig; if (noads && self.isAds) return nil; return orig; }
 - (BOOL)progressBarDraggable { return showProgressBar || %orig; }
 - (BOOL)progressBarVisible { return showProgressBar || %orig; }
 %end
 
 %hook CTCarrier
-- (NSString *)mobileCountryCode {
-    return (changeRegion && region[@"mcc"] != nil) ? region[@"mcc"] : %orig;
-}
-- (NSString *)isoCountryCode {
-    return (changeRegion && region[@"code"] != nil) ? region[@"code"] : %orig;
-}
-- (NSString *)mobileNetworkCode {
-    return (changeRegion && region[@"mnc"] != nil) ? region[@"mnc"] : %orig;
-}
+- (NSString *)mobileCountryCode { return (changeRegion && region[@"mcc"] != nil) ? region[@"mcc"] : %orig; }
+- (NSString *)isoCountryCode { return (changeRegion && region[@"code"] != nil) ? region[@"code"] : %orig; }
+- (NSString *)mobileNetworkCode { return (changeRegion && region[@"mnc"] != nil) ? region[@"mnc"] : %orig; }
 %end
 
 %hook AWEPlayVideoPlayerController
 - (void)playerWillLoopPlaying:(id)arg1 {
-    if (autoPlayNextVideo && [self.container.parentViewController isKindOfClass:%c(AWEFeedTableViewController)]) {
-        [((AWEFeedTableViewController *)self.container.parentViewController) scrollToNextVideo];
-        return;
+    if (autoPlayNextVideo) {
+        @try {
+            if ([self.container.parentViewController respondsToSelector:@selector(scrollToNextVideo)]) {
+                [self.container.parentViewController performSelector:@selector(scrollToNextVideo)];
+                return;
+            }
+        } @catch (NSException *e) {}
     }
     %orig;
 }
 %end
 
 %hook UIApplication
-- (void)applicationWillResignActive:(UIApplication *)app {
-    if (enableBackgroundPlay) TTGEnableBackgroundPlay();
-    %orig;
-}
-- (void)applicationDidEnterBackground:(UIApplication *)app {
-    if (enableBackgroundPlay) TTGEnableBackgroundPlay();
-    %orig;
-}
+- (void)applicationWillResignActive:(UIApplication *)app { if (enableBackgroundPlay) TTGEnableBackgroundPlay(); %orig; }
+- (void)applicationDidEnterBackground:(UIApplication *)app { if (enableBackgroundPlay) TTGEnableBackgroundPlay(); %orig; }
 %end
 
+// AWEFeedContainerViewController — NO %property! Use associated objects
+static AWEFeedContainerViewController *__weak __ttg_shared_fcvc;
 %hook AWEFeedContainerViewController
-static AWEFeedContainerViewController *__weak __ttg_shared;
-%property (nonatomic, assign) BOOL isUIHidden;
-
-- (id)init {
-    id orig = %orig;
-    self.isUIHidden = NO;
-    __ttg_shared = orig;
-    return orig;
-}
-
-%new
-+ (AWEFeedContainerViewController *)sharedInstance { return __ttg_shared; }
+- (id)init { id orig = %orig; __ttg_shared_fcvc = orig; return orig; }
 %end
 
+// AWEPlayInteractionViewController — NO %property! Use associated objects
 %hook AWEPlayInteractionViewController
-%property (nonatomic, retain) UIButton *hideUIButton;
-%property (nonatomic, retain) UIButton *downloadButton;
-%property (nonatomic, retain) UIButton *pipButton;
-
 - (void)viewDidLoad {
     %orig;
-
     if (downloadWithoutWatermark) {
-        self.downloadButton = [UIButton buttonWithType:UIButtonTypeCustom];
-        [self.downloadButton setImage:TTGIcon(icon_download, icon_download_len) forState:UIControlStateNormal];
-        self.downloadButton.imageEdgeInsets = UIEdgeInsetsMake(3,3,3,3);
-        self.downloadButton.frame = CGRectMake(self.view.bounds.size.width - 44, 135, 30, 30);
-        [self.downloadButton addTarget:self action:@selector(__ttgDownload:) forControlEvents:UIControlEventTouchUpInside];
-        [self.view addSubview:self.downloadButton];
+        UIButton *dlBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+        [dlBtn setImage:TTGIcon(icon_download, icon_download_len) forState:UIControlStateNormal];
+        dlBtn.imageEdgeInsets = UIEdgeInsetsMake(3,3,3,3);
+        dlBtn.frame = CGRectMake(self.view.bounds.size.width - 44, 135, 30, 30);
+        [dlBtn addTarget:self action:@selector(__ttgDownloadAction:) forControlEvents:UIControlEventTouchUpInside];
+        [self.view addSubview:dlBtn];
+        TTGSetAssoc(self, kDownloadButtonKey, dlBtn);
     }
-
     if (canHideUI) {
-        self.hideUIButton = [UIButton buttonWithType:UIButtonTypeCustom];
-        [self.hideUIButton setImage:TTGIcon(icon_hideui, icon_hideui_len) forState:UIControlStateNormal];
-        self.hideUIButton.imageView.contentMode = UIViewContentModeScaleAspectFit;
-        self.hideUIButton.imageEdgeInsets = UIEdgeInsetsMake(3,3,3,3);
-        self.hideUIButton.frame = CGRectMake(self.view.bounds.size.width - 44, 100, 30, 30);
-        [self.hideUIButton addTarget:self action:@selector(__ttgHideUI:) forControlEvents:UIControlEventTouchUpInside];
-        [self.view addSubview:self.hideUIButton];
+        UIButton *hBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+        [hBtn setImage:TTGIcon(icon_hideui, icon_hideui_len) forState:UIControlStateNormal];
+        hBtn.imageView.contentMode = UIViewContentModeScaleAspectFit;
+        hBtn.imageEdgeInsets = UIEdgeInsetsMake(3,3,3,3);
+        hBtn.frame = CGRectMake(self.view.bounds.size.width - 44, 100, 30, 30);
+        [hBtn addTarget:self action:@selector(__ttgHideUIAction:) forControlEvents:UIControlEventTouchUpInside];
+        [self.view addSubview:hBtn];
+        TTGSetAssoc(self, kHideUIButtonKey, hBtn);
     }
-
     if (enablePIP && NSClassFromString(@"AVPictureInPictureController")) {
-        self.pipButton = [UIButton buttonWithType:UIButtonTypeCustom];
-        self.pipButton.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.35];
-        self.pipButton.layer.cornerRadius = 14;
-        self.pipButton.titleLabel.font = [UIFont systemFontOfSize:14];
-        [self.pipButton setTitle:@"⤢" forState:UIControlStateNormal];
-        [self.pipButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        self.pipButton.frame = CGRectMake(self.view.bounds.size.width - 44, 170, 28, 28);
-        [self.pipButton addTarget:self action:@selector(__ttgPIP:) forControlEvents:UIControlEventTouchUpInside];
-        [self.view addSubview:self.pipButton];
+        UIButton *pBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+        pBtn.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.35];
+        pBtn.layer.cornerRadius = 14;
+        pBtn.titleLabel.font = [UIFont systemFontOfSize:14];
+        [pBtn setTitle:@"⤢" forState:UIControlStateNormal];
+        [pBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        pBtn.frame = CGRectMake(self.view.bounds.size.width - 44, 170, 28, 28);
+        [pBtn addTarget:self action:@selector(__ttgPIPAction:) forControlEvents:UIControlEventTouchUpInside];
+        [self.view addSubview:pBtn];
+        TTGSetAssoc(self, kPipButtonKey, pBtn);
     }
 }
 
 - (void)viewDidLayoutSubviews {
     %orig;
     CGFloat right = self.view.bounds.size.width - 44;
-    if (self.downloadButton) self.downloadButton.frame = CGRectMake(right, 135, 30, 30);
-    if (self.hideUIButton) self.hideUIButton.frame = CGRectMake(right, 100, 30, 30);
-    if (self.pipButton) self.pipButton.frame = CGRectMake(right, 170, 28, 28);
+    UIButton *dlBtn = TTGGetAssoc(self, kDownloadButtonKey);
+    UIButton *hBtn = TTGGetAssoc(self, kHideUIButtonKey);
+    UIButton *pBtn = TTGGetAssoc(self, kPipButtonKey);
+    if (dlBtn) dlBtn.frame = CGRectMake(right, 135, 30, 30);
+    if (hBtn) hBtn.frame = CGRectMake(right, 100, 30, 30);
+    if (pBtn) pBtn.frame = CGRectMake(right, 170, 28, 28);
 }
 
 - (void)stopLoadingAnimation {
     %orig;
-    if (canHideUI) dispatch_async(dispatch_get_main_queue(), ^{ [self __ttgUpdateUI]; });
+    if (canHideUI) dispatch_async(dispatch_get_main_queue(), ^{ [self __ttgUpdateUICheck]; });
 }
 
-%new
-- (void)__ttgHideUI:(UIButton *)sender {
-    AWEFeedContainerViewController *afcVC = (AWEFeedContainerViewController *)[%c(AWEFeedContainerViewController) sharedInstance];
-    afcVC.isUIHidden = !afcVC.isUIHidden;
-    [self __ttgUpdateUI];
+// %new replaced with direct methods — logos %new might also cause issues
+- (void)__ttgHideUIAction:(UIButton *)sender {
+    AWEFeedContainerViewController *fcvc = __ttg_shared_fcvc;
+    BOOL hidden = !TTGGetBoolAssoc(fcvc, kIsUIHiddenKey);
+    TTGSetBoolAssoc(fcvc, kIsUIHiddenKey, hidden);
+    [self __ttgUpdateUICheck];
 }
 
-%new
-- (void)__ttgDownload:(UIButton *)sender {
+- (void)__ttgDownloadAction:(UIButton *)sender {
     NSString *url = TTGGetVideoURL(self.model.video);
     if (!url.length) { TTGShowAlert(@"No video URL found", @"Error", self); return; }
     if ([url containsString:@".m3u8"]) { TTGShowAlert(@"m3u8 not supported", @"Not supported", self); return; }
-
     void (^startDownload)(void) = ^{
         UIAlertController *progress = [UIAlertController alertControllerWithTitle:@"Downloading…" message:@"0%" preferredStyle:UIAlertControllerStyleAlert];
         [self presentViewController:progress animated:YES completion:nil];
@@ -625,32 +475,30 @@ static AWEFeedContainerViewController *__weak __ttg_shared;
         };
         [dl downloadURLString:url];
     };
-
-    if (@available(iOS 14.0, *)) {
-        [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelAddOnly handler:^(PHAuthorizationStatus s) { startDownload(); }];
-    } else {
-        [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus s) { startDownload(); }];
-    }
+    if (@available(iOS 14.0, *)) { [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelAddOnly handler:^(PHAuthorizationStatus s) { startDownload(); }]; }
+    else { [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus s) { startDownload(); }]; }
 }
 
-%new
-- (void)__ttgPIP:(UIButton *)sender {
+- (void)__ttgPIPAction:(UIButton *)sender {
     NSString *url = TTGGetVideoURL(self.model.video);
     TTGTogglePIP(url);
 }
 
-%new
-- (void)__ttgUpdateUI {
-    AWEFeedContainerViewController *afcVC = (AWEFeedContainerViewController *)[%c(AWEFeedContainerViewController) sharedInstance];
-    [self setHide:afcVC.isUIHidden];
-    [self.downloadButton setHidden:afcVC.isUIHidden];
-    [self.hideUIButton setImage:afcVC.isUIHidden ? TTGIcon(icon_showui, icon_showui_len) : TTGIcon(icon_hideui, icon_hideui_len) forState:UIControlStateNormal];
-    [self.pipButton setHidden:afcVC.isUIHidden];
-    if ([self.parentViewController isKindOfClass:%c(AWEFeedCellViewController)]) {
-        [afcVC setAccessoriesHidden:afcVC.isUIHidden];
-    }
-    afcVC.tabControl.hidden = afcVC.isUIHidden;
-    afcVC.specialEventEntranceView.hidden = afcVC.isUIHidden;
+- (void)__ttgUpdateUICheck {
+    AWEFeedContainerViewController *fcvc = __ttg_shared_fcvc;
+    BOOL hidden = TTGGetBoolAssoc(fcvc, kIsUIHiddenKey);
+    [self setHide:hidden];
+    UIButton *dlBtn = TTGGetAssoc(self, kDownloadButtonKey);
+    UIButton *hBtn = TTGGetAssoc(self, kHideUIButtonKey);
+    UIButton *pBtn = TTGGetAssoc(self, kPipButtonKey);
+    [dlBtn setHidden:hidden];
+    [hBtn setImage:hidden ? TTGIcon(icon_showui, icon_showui_len) : TTGIcon(icon_hideui, icon_hideui_len) forState:UIControlStateNormal];
+    [pBtn setHidden:hidden];
+    @try {
+        if ([fcvc respondsToSelector:@selector(setAccessoriesHidden:)]) [fcvc setAccessoriesHidden:hidden];
+        fcvc.tabControl.hidden = hidden;
+        fcvc.specialEventEntranceView.hidden = hidden;
+    } @catch (NSException *e) {}
 }
 %end
 
@@ -663,24 +511,12 @@ static AWEFeedContainerViewController *__weak __ttg_shared;
     return %orig;
 }
 %end
-%end // group CoreLogic
+%end // CoreLogic
 
-#pragma mark - Ctor + Launch Hook (both trigger button attach)
-
-%group AppLifecycle
-%hook UIApplication
-- (void)applicationDidFinishLaunching:(UIApplication *)app {
-    %orig;
-    NSLog(@"[TTG] ✅ applicationDidFinishLaunching — starting button attach...");
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        TTGTryAttachButton(0);
-    });
-}
-%end
-%end // group AppLifecycle
+#pragma mark - Ctor
 
 %ctor {
-    NSLog(@"[TTG] 🚀 constructor fired — dylib loaded by dyld");
+    NSLog(@"[TTG] 🚀 ctor fired — registering hooks + starting button...");
 
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
                                     (CFNotificationCallback)reloadPrefs,
@@ -690,16 +526,21 @@ static AWEFeedContainerViewController *__weak __ttg_shared;
 
     if (enableBackgroundPlay) TTGEnableBackgroundPlay();
 
-    // Start attaching from ctor too — just in case applicationDidFinishLaunching hook fails
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (!g_buttonAttached) {
-            NSLog(@"[TTG] ctor retry: starting button attach loop");
-            TTGTryAttachButton(0);
-        }
-    });
+    // Attach button — multiple trigger points
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ TTGTryAttachButton(0); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (!g_buttonAttached) TTGTryAttachButton(0); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (!g_buttonAttached) TTGTryAttachButton(0); });
 
-    %init(SecurityBypass);
-    %init(CoreLogic);
-    %init(AppLifecycle);
-    NSLog(@"[TTG] All hooks registered ✅");
+    // Init hooks
+    @try {
+        %init(SecurityBypass);
+        NSLog(@"[TTG] ✅ SecurityBypass hooks registered");
+    } @catch (NSException *e) { NSLog(@"[TTG] ❌ SecurityBypass init crashed: %@", e); }
+
+    @try {
+        %init(CoreLogic);
+        NSLog(@"[TTG] ✅ CoreLogic hooks registered");
+    } @catch (NSException *e) { NSLog(@"[TTG] ❌ CoreLogic init crashed: %@", e); }
+
+    NSLog(@"[TTG] ctor done — hooks registered, button attaching");
 }
