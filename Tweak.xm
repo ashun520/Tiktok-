@@ -1378,16 +1378,17 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
         _panelShowing = YES;
         NSLog(@"[TTG] ✅ ✌️ 双指长按 BEGAN → 弹设置面板");
 
-        UIViewController *topVC = TTGTopVC();
-        if (!topVC) { _panelShowing = NO; return; }
-        Class cls = NSClassFromString(@"TTGSettingsViewController");
-        if (!cls) { _panelShowing = NO; return; }
-        UIViewController *vc = [[cls alloc] init];
-        if (!vc) { _panelShowing = NO; return; }
+        // 🔴 关键！present 之前彻底 removeFromSuperview 我们的手势！
+        // 否则 window 上的 TTGSinglePressRecognizer 会吞掉设置面板里 switch 的触摸
+        TTGSetWindowLongPressEnabled(NO);
 
-        // 关键：用 FullScreen 而不是 OverFullScreen！
-        // OverFullScreen 会让底下 VC 继续活跃，底下的手势仍在干扰触摸
-        // FullScreen 会停止底下 VC 的触摸，presented VC 独占
+        UIViewController *topVC = TTGTopVC();
+        if (!topVC) { TTGSetWindowLongPressEnabled(YES); _panelShowing = NO; return; }
+        Class cls = NSClassFromString(@"TTGSettingsViewController");
+        if (!cls) { TTGSetWindowLongPressEnabled(YES); _panelShowing = NO; return; }
+        UIViewController *vc = [[cls alloc] init];
+        if (!vc) { TTGSetWindowLongPressEnabled(YES); _panelShowing = NO; return; }
+
         vc.modalPresentationStyle = UIModalPresentationFullScreen;
         vc.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
         [topVC presentViewController:vc animated:NO completion:nil];
@@ -2086,7 +2087,19 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (void)dismissSelf {
-    [self dismissViewControllerAnimated:YES completion:nil];
+    NSLog(@"[TTG] 🔒 dismissSelf → 关闭设置面板");
+    [self dismissViewControllerAnimated:YES completion:^{
+        // 🔴 关键！关闭后恢复 window 上的手势
+        TTGSetWindowLongPressEnabled(YES);
+        NSLog(@"[TTG] 🔒 dismissSelf → 手势已恢复");
+    }];
+}
+
+// 兜底：任何方式（包括系统 dismiss）消失时都恢复手势
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+    NSLog(@"[TTG] viewDidDisappear → 兜底恢复手势");
+    TTGSetWindowLongPressEnabled(YES);
 }
 
 - (void)toggleAllOn {
