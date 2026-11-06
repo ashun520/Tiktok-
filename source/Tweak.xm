@@ -1,41 +1,83 @@
 /**
- * TikTok God — LCSign injection port
+ * TikTok God — LCSign injection port (enhanced)
  * Based on haoict/tiktok-god (MIT) — https://github.com/haoict/tiktok-god
- * Changes for non-jailbreak injection:
- *   - libhdev dependency replaced with native download/alert implementation
- *   - icons embedded into the dylib (no /Library/Application Support)
- *   - prefs read from app sandbox instead of /var/mobile
+ *
+ * Enhancements for LCSign injection:
+ *   - Jailbreak bypass (non-jailbreak env also needs this for TikTok security)
+ *   - All features ON by default
+ *   - In-app settings panel (long-press floating dot in top-left)
+ *   - Picture-in-Picture support
+ *   - Background video playback
+ *   - Cleaner watermark-free URL (downloadURL preferred)
  */
 
 #include "Tweak.h"
 #include "icons.h"
+#import <AVKit/AVKit.h>
+#import <AVFoundation/AVFoundation.h>
 
-BOOL noads;
-BOOL downloadWithoutWatermark;
-BOOL autoPlayNextVideo;
-BOOL changeRegion;
-BOOL showProgressBar;
-BOOL canHideUI;
-BOOL enableFavoritesCollections;
-NSDictionary *region;
+#pragma mark - Global state (ALL ON by default)
 
-#pragma mark - Prefs
+BOOL noads = YES;
+BOOL downloadWithoutWatermark = YES;
+BOOL autoPlayNextVideo = YES;
+BOOL changeRegion = YES;
+BOOL showProgressBar = YES;
+BOOL canHideUI = YES;
+BOOL enableFavoritesCollections = YES;
+BOOL enablePIP = YES;
+BOOL enableBackgroundPlay = YES;
+BOOL enableBypass = YES;
+NSDictionary *region = @{@"mcc": @"310", @"mnc": @"001", @"code": @"us"};
+
+// PiP global refs
+static AVPictureInPictureController *g_pipController;
+static AVPlayerLayer *g_pipPlayerLayer;
+static AVPlayer *g_pipPlayer;
+
+#pragma mark - Prefs (sandbox plist, NOT /var/mobile)
 
 static NSString *TTGPrefsPath(void) {
     return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences/com.haoict.tiktokgodpref.plist"];
 }
 
-static void reloadPrefs(void) {
-    NSDictionary *settings = [[NSMutableDictionary alloc] initWithContentsOfFile:TTGPrefsPath()] ?: [@{} mutableCopy];
+static NSDictionary *TTGAllPrefs(void) {
+    return @{
+        @"noads": @(noads),
+        @"downloadWithoutWatermark": @(downloadWithoutWatermark),
+        @"autoPlayNextVideo": @(autoPlayNextVideo),
+        @"changeRegion": @(changeRegion),
+        @"showProgressBar": @(showProgressBar),
+        @"canHideUI": @(canHideUI),
+        @"enableFavoritesCollections": @(enableFavoritesCollections),
+        @"enablePIP": @(enablePIP),
+        @"enableBackgroundPlay": @(enableBackgroundPlay),
+        @"enableBypass": @(enableBypass),
+        @"region": region ?: @{}
+    };
+}
 
-    noads = [[settings objectForKey:@"noads"] ?: @(YES) boolValue];
-    downloadWithoutWatermark = [[settings objectForKey:@"downloadWithoutWatermark"] ?: @(YES) boolValue];
-    autoPlayNextVideo = [[settings objectForKey:@"autoPlayNextVideo"] ?: @(NO) boolValue];
-    changeRegion = [[settings objectForKey:@"changeRegion"] ?: @(NO) boolValue];
-    region = [settings objectForKey:@"region"] ?: [@{} mutableCopy];
-    showProgressBar = [[settings objectForKey:@"showProgressBar"] ?: @(NO) boolValue];
-    enableFavoritesCollections = [[settings objectForKey:@"enableFavoritesCollections"] ?: @(NO) boolValue];
-    canHideUI = [[settings objectForKey:@"canHideUI"] ?: @(YES) boolValue];
+static void TTGSavePrefs(void) {
+    [TTGAllPrefs() writeToFile:TTGPrefsPath() atomically:YES];
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CFSTR(PREF_CHANGED_NOTIF), NULL, NULL, YES);
+}
+
+static void reloadPrefs(void) {
+    NSDictionary *s = [[NSMutableDictionary alloc] initWithContentsOfFile:TTGPrefsPath()] ?: @{};
+    if (s.allKeys.count == 0) return; // first run, keep all-on defaults
+
+    noads = [[s objectForKey:@"noads"] ?: @(YES) boolValue];
+    downloadWithoutWatermark = [[s objectForKey:@"downloadWithoutWatermark"] ?: @(YES) boolValue];
+    autoPlayNextVideo = [[s objectForKey:@"autoPlayNextVideo"] ?: @(YES) boolValue];
+    changeRegion = [[s objectForKey:@"changeRegion"] ?: @(YES) boolValue];
+    showProgressBar = [[s objectForKey:@"showProgressBar"] ?: @(YES) boolValue];
+    canHideUI = [[s objectForKey:@"canHideUI"] ?: @(YES) boolValue];
+    enableFavoritesCollections = [[s objectForKey:@"enableFavoritesCollections"] ?: @(YES) boolValue];
+    enablePIP = [[s objectForKey:@"enablePIP"] ?: @(YES) boolValue];
+    enableBackgroundPlay = [[s objectForKey:@"enableBackgroundPlay"] ?: @(YES) boolValue];
+    enableBypass = [[s objectForKey:@"enableBypass"] ?: @(YES) boolValue];
+    NSDictionary *r = [s objectForKey:@"region"];
+    if (r && r.allKeys.count) region = r;
 }
 
 #pragma mark - Helpers
@@ -49,12 +91,9 @@ static UIViewController *TTGTopViewController(void) {
     if (@available(iOS 13.0, *)) {
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
             if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-                UIWindowScene *windowScene = (UIWindowScene *)scene;
-                if (@available(iOS 15.0, *)) {
-                    rootVC = windowScene.keyWindow.rootViewController;
-                } else {
-                    rootVC = windowScene.windows.firstObject.rootViewController;
-                }
+                UIWindowScene *ws = (UIWindowScene *)scene;
+                if (@available(iOS 15.0, *)) rootVC = ws.keyWindow.rootViewController;
+                else rootVC = ws.windows.firstObject.rootViewController;
                 break;
             }
         }
@@ -64,21 +103,34 @@ static UIViewController *TTGTopViewController(void) {
     return rootVC;
 }
 
-static void TTGShowAlert(NSString *message, NSString *title, UIViewController *fromVC) {
+static void TTGShowAlert(NSString *msg, NSString *title, UIViewController *fromVC) {
     UIViewController *vc = fromVC ?: TTGTopViewController();
     if (!vc) return;
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-        [vc presentViewController:alert animated:YES completion:nil];
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:msg preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [vc presentViewController:a animated:YES completion:nil];
     });
 }
 
-#pragma mark - Native downloader (replaces libhdev HDownloadMediaWithProgress)
+/// Pick the cleanest watermark-free URL for download
+static NSString *TTGGetVideoURL(AWEVideoModel *video) {
+    NSArray *dlList = video.downloadURL.originURLList;
+    NSString *dlURL = (NSString *)dlList.firstObject;
+    if (dlURL.length > 0) return dlURL;
+
+    NSArray *plList = video.playURL.originURLList;
+    NSString *plURL = (NSString *)plList.firstObject;
+    if (plURL.length > 0) return plURL;
+
+    return nil;
+}
+
+#pragma mark - Native downloader (replaces libhdev)
 
 @interface TTGDownloader : NSObject <NSURLSessionDownloadDelegate>
-@property (nonatomic, copy) void (^onProgress)(double fraction);
-@property (nonatomic, copy) void (^onDone)(BOOL success, NSString *error);
+@property (nonatomic, copy) void (^onProgress)(double);
+@property (nonatomic, copy) void (^onDone)(BOOL, NSString *);
 - (void)downloadURLString:(NSString *)urlString;
 @end
 
@@ -86,222 +138,458 @@ static void TTGShowAlert(NSString *message, NSString *title, UIViewController *f
 
 - (void)downloadURLString:(NSString *)urlString {
     NSURL *url = [NSURL URLWithString:urlString];
-    if (!url) {
-        if (self.onDone) self.onDone(NO, @"Invalid URL");
-        return;
-    }
-    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration defaultSessionConfiguration];
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg delegate:self delegateQueue:nil];
-    [[session downloadTaskWithURL:url] resume];
+    if (!url) { if (self.onDone) self.onDone(NO, @"Invalid URL"); return; }
+    [[[NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration] delegate:self delegateQueue:nil] downloadTaskWithURL:url] resume];
 }
 
-- (void)URLSession:(NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)task
-           didWriteData:(int64_t)bytesWritten
-      totalBytesWritten:(int64_t)totalBytesWritten
-totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
-    if (totalBytesExpectedToWrite > 0 && self.onProgress) {
-        double fraction = (double)totalBytesWritten / (double)totalBytesExpectedToWrite;
-        dispatch_async(dispatch_get_main_queue(), ^{ self.onProgress(fraction); });
-    }
+- (void)URLSession:(NSURLSession *)s downloadTask:(NSURLSessionDownloadTask *)t didWriteData:(int64_t)bw totalBytesWritten:(int64_t)tw totalBytesExpectedToWrite:(int64_t)te {
+    if (te > 0 && self.onProgress) dispatch_async(dispatch_get_main_queue(), ^{ self.onProgress((double)tw / (double)te); });
 }
 
-- (void)URLSession:(NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)task
-didFinishDownloadingToURL:(NSURL *)location {
+- (void)URLSession:(NSURLSession *)s downloadTask:(NSURLSessionDownloadTask *)t didFinishDownloadingToURL:(NSURL *)location {
     NSString *destPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ttg_video.mp4"];
     NSURL *dest = [NSURL fileURLWithPath:destPath];
-    NSFileManager *fm = [NSFileManager defaultManager];
-    [fm removeItemAtURL:dest error:nil];
-    NSError *moveErr = nil;
-    [fm moveItemAtURL:location toURL:dest error:&moveErr];
-    if (moveErr) {
-        if (self.onDone) self.onDone(NO, moveErr.localizedDescription);
+    [[NSFileManager defaultManager] removeItemAtURL:dest error:nil];
+    if (![[NSFileManager defaultManager] moveItemAtURL:location toURL:dest error:nil]) {
+        if (self.onDone) self.onDone(NO, @"Move failed");
         return;
     }
-
     __block NSError *saveErr = nil;
     [[PHPhotoLibrary sharedPhotoLibrary] performChangesAndWait:^{
         [PHAssetChangeRequest creationRequestForAssetFromVideoAtFileURL:dest];
     } error:&saveErr];
-
-    [fm removeItemAtURL:dest error:nil];
+    [[NSFileManager defaultManager] removeItemAtURL:dest error:nil];
     if (self.onDone) self.onDone(saveErr == nil, saveErr.localizedDescription ?: nil);
 }
 
-- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
-    if (error && self.onDone) {
-        dispatch_async(dispatch_get_main_queue(), ^{ self.onDone(NO, error.localizedDescription); });
+- (void)URLSession:(NSURLSession *)s task:(NSURLSessionTask *)t didCompleteWithError:(NSError *)error {
+    if (error && self.onDone) dispatch_async(dispatch_get_main_queue(), ^{ self.onDone(NO, error.localizedDescription); });
+}
+@end
+
+#pragma mark - Picture-in-Picture helper
+
+static void TTGTogglePIP(NSString *videoURL) {
+    Class pipCls = NSClassFromString(@"AVPictureInPictureController");
+    if (!pipCls || !videoURL.length) {
+        TTGShowAlert(@"PiP not supported or no video URL", @"PiP", nil);
+        return;
+    }
+
+    if (g_pipController && g_pipController.isPictureInPictureActive) {
+        [g_pipController stopPictureInPicture];
+        return;
+    }
+
+    NSURL *url = [NSURL URLWithString:videoURL];
+    if (!g_pipPlayer) g_pipPlayer = [AVPlayer playerWithURL:url];
+    else { [g_pipPlayer replaceCurrentItemWithPlayerItem:[AVPlayerItem playerItemWithURL:url]]; }
+
+    if (!g_pipPlayerLayer) {
+        g_pipPlayerLayer = [AVPlayerLayer layer];
+        g_pipPlayerLayer.frame = CGRectMake(0, 0, 100, 100);
+        UIView *host = TTGTopViewController().view;
+        if (host) [host.layer addSublayer:g_pipPlayerLayer];
+    }
+    g_pipPlayerLayer.player = g_pipPlayer;
+
+    if (!g_pipController) g_pipController = [[AVPictureInPictureController alloc] initWithPlayerLayer:g_pipPlayerLayer];
+    if ([AVPictureInPictureController isPictureInPictureSupported]) {
+        [g_pipController startPictureInPicture];
+    } else {
+        TTGShowAlert(@"PiP not supported on this device", @"PiP", nil);
     }
 }
 
+#pragma mark - Background play helper
+
+static void TTGEnableBackgroundPlay(void) {
+    if (!enableBackgroundPlay) return;
+    NSError *err = nil;
+    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback
+                                     withOptions:AVAudioSessionCategoryOptionMixWithOthers
+                                           error:&err];
+    [[AVAudioSession sharedInstance] setActive:YES error:&err];
+}
+
+#pragma mark - Settings Panel
+
+@interface TTGSettingsButton : UIButton
+@end
+
+@implementation TTGSettingsButton
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        self.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.35];
+        self.layer.cornerRadius = frame.size.width / 2.0;
+        self.layer.borderWidth = 1;
+        self.layer.borderColor = [UIColor whiteColor].CGColor;
+        self.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
+        [self setTitle:@"G" forState:UIControlStateNormal];
+        [self setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        self.alpha = 0.55;
+        self.accessibilityLabel = @"TikTok God settings";
+
+        UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(longPressed:)];
+        lp.minimumPressDuration = 0.6;
+        [self addGestureRecognizer:lp];
+
+        // Also allow tap
+        [self addTarget:self action:@selector(tapped) forControlEvents:UIControlEventTouchUpInside];
+    }
+    return self;
+}
+
+- (void)tapped { [self showPanel]; }
+- (void)longPressed:(UILongPressGestureRecognizer *)g {
+    if (g.state == UIGestureRecognizerStateBegan) [self showPanel];
+}
+
+- (void)showPanel {
+    UIViewController *vc = TTGTopViewController();
+    if (!vc) return;
+
+    UIAlertController *panel = [UIAlertController alertControllerWithTitle:@"TikTok God"
+                                                                   message:@"长按或点击任意开关切换。重启 TikTok 生效。"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    void (^addToggle)(NSString *, BOOL *, BOOL) = ^(NSString *title, BOOL *flag, BOOL restart) {
+        NSString *prefix = *flag ? @"✅ " : @"⬜️ ";
+        UIAlertAction *a = [UIAlertAction actionWithTitle:[prefix stringByAppendingString:title]
+                                                     style:UIAlertActionStyleDefault
+                                                   handler:^(UIAlertAction * _Nonnull action) {
+            *flag = !*flag;
+            TTGSavePrefs();
+            // Re-show updated panel
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self showPanel];
+            });
+        }];
+        [panel addAction:a];
+    };
+
+    addToggle(@"去广告", &noads, NO);
+    addToggle(@"无水印下载", &downloadWithoutWatermark, NO);
+    addToggle(@"自动连播下一个", &autoPlayNextVideo, NO);
+    addToggle(@"强制进度条可拖动", &showProgressBar, NO);
+    addToggle(@"一键隐藏 UI", &canHideUI, NO);
+    addToggle(@"切换地区 (默认 US)", &changeRegion, YES);
+    addToggle(@"画中画 PiP", &enablePIP, NO);
+    addToggle(@"后台继续播放", &enableBackgroundPlay, NO);
+    addToggle(@"绕过安全检测", &enableBypass, YES);
+    addToggle(@"收藏合集入口", &enableFavoritesCollections, YES);
+
+    [panel addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [vc presentViewController:panel animated:YES completion:nil];
+}
+@end
+
+/// Transparent window that hosts the settings floating button
+@interface TTGSettingsWindow : UIWindow
+@property (nonatomic, strong) TTGSettingsButton *button;
+@end
+
+@implementation TTGSettingsWindow
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        self.windowLevel = UIWindowLevelNormal + 1;
+        self.backgroundColor = [UIColor clearColor];
+        self.opaque = NO;
+        self.userInteractionEnabled = YES;
+        self.hidden = NO;
+
+        CGFloat size = 24;
+        self.button = [[TTGSettingsButton alloc] initWithFrame:CGRectMake(12, 130, size, size)];
+        [self addSubview:self.button];
+
+        // Draggable
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dragging:)];
+        [self.button addGestureRecognizer:pan];
+    }
+    return self;
+}
+
+- (void)dragging:(UIPanGestureRecognizer *)g {
+    CGPoint p = [g translationInView:self];
+    CGPoint c = self.button.center;
+    self.button.center = CGPointMake(c.x + p.x, c.y + p.y);
+    [g setTranslation:CGPointZero inView:self];
+    // Snap to nearest edge on release
+    if (g.state == UIGestureRecognizerStateEnded) {
+        CGFloat bx = self.button.center.x, screenW = self.bounds.size.width;
+        CGFloat newX = bx < screenW / 2 ? 24 : screenW - 24;
+        [UIView animateWithDuration:0.2 animations:^{ self.button.center = CGPointMake(newX, self.button.center.y); }];
+    }
+}
 @end
 
 #pragma mark - Hooks
 
-%group CoreLogic
-%hook AWEAwemeModel
-- (id)initWithDictionary:(id)arg1 error:(id *)arg2 {
-    id orig = %orig;
-    return noads && self.isAds ? nil : orig;
+%group SecurityBypass
+%hook NSFileManager
+- (BOOL)fileExistsAtPath:(NSString *)p {
+    if (enableBypass) {
+        static NSArray *bypassPaths = nil;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            bypassPaths = @[
+                @"/Applications/Cydia.app", @"/Applications/blackra1n.app", @"/Applications/Sileo.app",
+                @"/usr/libexec/cydia/firmware.sh", @"/usr/bin/ssh",
+                @"/Library/MobileSubstrate", @"/Library/TweakInject",
+                @"/.cydia_no_stash", @"/.installed_unc0ver",
+                @"/private/var/lib/cydia", @"/var/lib/cydia",
+                @"/usr/lib/libjailbreak.dylib", @"/jb",
+                @"/etc/apt", @"/var/log/apt", @"/Library/Application Support/Substrate"
+            ];
+        });
+        if ([bypassPaths containsObject:p]) return NO;
+    }
+    return %orig;
 }
-
-- (id)init {
-    id orig = %orig;
-    return noads && self.isAds ? nil : orig;
-}
-
-- (BOOL)progressBarDraggable {
-    return showProgressBar || %orig;
-}
-- (BOOL)progressBarVisible {
-    return showProgressBar || %orig;
+- (BOOL)fileExistsAtPath:(NSString *)p isDirectory:(BOOL *)d {
+    if (enableBypass) {
+        static NSArray *bypassPaths = nil;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            bypassPaths = @[
+                @"/Applications/Cydia.app", @"/Applications/blackra1n.app", @"/Applications/Sileo.app",
+                @"/usr/libexec/cydia/firmware.sh", @"/usr/bin/ssh",
+                @"/Library/MobileSubstrate", @"/Library/TweakInject",
+                @"/.cydia_no_stash", @"/.installed_unc0ver",
+                @"/private/var/lib/cydia", @"/var/lib/cydia",
+                @"/usr/lib/libjailbreak.dylib", @"/jb",
+                @"/etc/apt", @"/var/log/apt", @"/Library/Application Support/Substrate"
+            ];
+        });
+        if ([bypassPaths containsObject:p]) return NO;
+    }
+    return %orig;
 }
 %end
 
+// Hook common jailbreak helper classes — logos internal generator skips unknown classes gracefully
+%hook BDADeviceHelper
++(BOOL)isJailBroken { return enableBypass ? NO : %orig; }
+%end
+%hook TTInstallUtil
++(BOOL)isJailBroken { return enableBypass ? NO : %orig; }
+%end
+%hook IESLiveDeviceInfo
++(BOOL)isJailBroken { return enableBypass ? NO : %orig; }
+%end
+%hook AppsFlyerUtils
++(BOOL)isJailBroken { return enableBypass ? NO : %orig; }
+%end
+%hook BDInstallNetworkUtility
++(BOOL)isJailBroken { return enableBypass ? NO : %orig; }
+%end
+%hook TTAdSplashDeviceHelper
++(BOOL)isJailBroken { return enableBypass ? NO : %orig; }
+%end
+
+%hook GULAppEnvironmentUtil
++(BOOL)isFromAppStore { return enableBypass ? YES : %orig; }
++(BOOL)isAppStoreReceiptSandbox { return enableBypass ? NO : %orig; }
+%end
+
+%hook FBSDKAppEventsUtility
++(BOOL)isDebugBuild { return enableBypass ? NO : %orig; }
+%end
+
+%hook AWEAPMManager
++(NSString *)signInfo { return enableBypass ? @"AppStore" : %orig; }
+%end
+
+%hook NSBundle
+- (NSString *)pathForResource:(NSString *)name ofType:(NSString *)ext {
+    if (enableBypass && [ext isEqualToString:@"mobileprovision"]) return nil;
+    return %orig;
+}
+- (NSData *)dataForResource:(NSString *)name ofType:(NSString *)ext {
+    if (enableBypass && [ext isEqualToString:@"mobileprovision"]) return nil;
+    return %orig;
+}
+%end
+
+%hook AWESecurity
+- (void)resetCollectMode { if (!enableBypass) %orig; }
+%end
+%end // group SecurityBypass
+
+%group CoreLogic
+
+%hook AWEAwemeModel
+- (id)initWithDictionary:(id)arg1 error:(id *)arg2 {
+    id orig = %orig;
+    if (noads && self.isAds) return nil;
+    return orig;
+}
+- (id)init {
+    id orig = %orig;
+    if (noads && self.isAds) return nil;
+    return orig;
+}
+- (BOOL)progressBarDraggable { return showProgressBar || %orig; }
+- (BOOL)progressBarVisible { return showProgressBar || %orig; }
+%end
+
 %hook CTCarrier
-// Thanks chenxk-j for this
 - (NSString *)mobileCountryCode {
     return (changeRegion && region[@"mcc"] != nil) ? region[@"mcc"] : %orig;
 }
-
 - (NSString *)isoCountryCode {
     return (changeRegion && region[@"code"] != nil) ? region[@"code"] : %orig;
 }
-
 - (NSString *)mobileNetworkCode {
     return (changeRegion && region[@"mnc"] != nil) ? region[@"mnc"] : %orig;
 }
 %end
 
 %hook AWEPlayVideoPlayerController
+// Auto-advance + maintain audio session for background play
 - (void)playerWillLoopPlaying:(id)arg1 {
-    if (autoPlayNextVideo) {
-        if ([self.container.parentViewController isKindOfClass:%c(AWEFeedTableViewController)]) {
-            [((AWEFeedTableViewController *)self.container.parentViewController) scrollToNextVideo];
-            return;
-        }
+    if (autoPlayNextVideo && [self.container.parentViewController isKindOfClass:%c(AWEFeedTableViewController)]) {
+        [((AWEFeedTableViewController *)self.container.parentViewController) scrollToNextVideo];
+        return;
     }
+    %orig;
+}
+%end
+
+// Background audio session — maintain playback when app goes to background
+%hook UIApplication
+- (void)applicationWillResignActive:(UIApplication *)app {
+    if (enableBackgroundPlay) TTGEnableBackgroundPlay();
+    %orig;
+}
+- (void)applicationDidEnterBackground:(UIApplication *)app {
+    if (enableBackgroundPlay) TTGEnableBackgroundPlay();
     %orig;
 }
 %end
 
 %hook AWEFeedContainerViewController
-static AWEFeedContainerViewController *__weak sharedInstance;
+static AWEFeedContainerViewController *__weak __ttg_shared;
 %property (nonatomic, assign) BOOL isUIHidden;
 
 - (id)init {
     id orig = %orig;
     self.isUIHidden = NO;
-    sharedInstance = orig;
+    __ttg_shared = orig;
     return orig;
 }
 
 %new
-+ (AWEFeedContainerViewController *)sharedInstance {
-    return sharedInstance;
-}
++ (AWEFeedContainerViewController *)sharedInstance { return __ttg_shared; }
 %end
 
 %hook AWEPlayInteractionViewController
 %property (nonatomic, retain) UIButton *hideUIButton;
 %property (nonatomic, retain) UIButton *downloadButton;
+%property (nonatomic, retain) UIButton *pipButton;
 
 - (void)viewDidLoad {
     %orig;
 
+    // Download button — cleaner watermark-free URL
     if (downloadWithoutWatermark) {
         self.downloadButton = [UIButton buttonWithType:UIButtonTypeCustom];
-        [self.downloadButton.titleLabel setFont:[UIFont systemFontOfSize:15]];
-        [self.downloadButton addTarget:self action:@selector(downloadButtonPressed:) forControlEvents:UIControlEventTouchUpInside];
         [self.downloadButton setImage:TTGIcon(icon_download, icon_download_len) forState:UIControlStateNormal];
-        self.downloadButton.imageEdgeInsets = UIEdgeInsetsMake(3.0, 3.0, 3.0, 3.0);
-        self.downloadButton.frame = CGRectMake(self.view.frame.size.width - 30 - 10, 135.0, 30.0, 30.0);
+        self.downloadButton.imageEdgeInsets = UIEdgeInsetsMake(3,3,3,3);
+        self.downloadButton.frame = CGRectMake(self.view.bounds.size.width - 44, 135, 30, 30);
+        [self.downloadButton addTarget:self action:@selector(__ttgDownload:) forControlEvents:UIControlEventTouchUpInside];
         [self.view addSubview:self.downloadButton];
     }
 
+    // Hide UI button
     if (canHideUI) {
-        AWEFeedContainerViewController *afcVC = (AWEFeedContainerViewController *)[%c(AWEFeedContainerViewController) sharedInstance];
         self.hideUIButton = [UIButton buttonWithType:UIButtonTypeCustom];
-        [self.hideUIButton.titleLabel setFont:[UIFont systemFontOfSize:15]];
-        [self.hideUIButton addTarget:self action:@selector(hideUIButtonPressed:) forControlEvents:UIControlEventTouchUpInside];
-        [self.hideUIButton setImage:afcVC.isUIHidden ? TTGIcon(icon_showui, icon_showui_len) : TTGIcon(icon_hideui, icon_hideui_len) forState:UIControlStateNormal];
+        [self.hideUIButton setImage:TTGIcon(icon_hideui, icon_hideui_len) forState:UIControlStateNormal];
         self.hideUIButton.imageView.contentMode = UIViewContentModeScaleAspectFit;
-        self.hideUIButton.imageEdgeInsets = UIEdgeInsetsMake(3.0, 3.0, 3.0, 3.0);
-        self.hideUIButton.frame = CGRectMake(self.view.frame.size.width - 30 - 10, 100.0, 30.0, 30.0);
+        self.hideUIButton.imageEdgeInsets = UIEdgeInsetsMake(3,3,3,3);
+        self.hideUIButton.frame = CGRectMake(self.view.bounds.size.width - 44, 100, 30, 30);
+        [self.hideUIButton addTarget:self action:@selector(__ttgHideUI:) forControlEvents:UIControlEventTouchUpInside];
         [self.view addSubview:self.hideUIButton];
     }
+
+    // PiP button — show as a small circle
+    if (enablePIP && NSClassFromString(@"AVPictureInPictureController")) {
+        self.pipButton = [UIButton buttonWithType:UIButtonTypeCustom];
+        self.pipButton.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.35];
+        self.pipButton.layer.cornerRadius = 14;
+        self.pipButton.titleLabel.font = [UIFont systemFontOfSize:14];
+        [self.pipButton setTitle:@"⤢" forState:UIControlStateNormal];
+        [self.pipButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        self.pipButton.frame = CGRectMake(self.view.bounds.size.width - 44, 170, 28, 28);
+        [self.pipButton addTarget:self action:@selector(__ttgPIP:) forControlEvents:UIControlEventTouchUpInside];
+        [self.view addSubview:self.pipButton];
+    }
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    CGFloat right = self.view.bounds.size.width - 44;
+    if (self.downloadButton) self.downloadButton.frame = CGRectMake(right, 135, 30, 30);
+    if (self.hideUIButton) self.hideUIButton.frame = CGRectMake(right, 100, 30, 30);
+    if (self.pipButton) self.pipButton.frame = CGRectMake(right, 170, 28, 28);
 }
 
 - (void)stopLoadingAnimation {
     %orig;
-    if (canHideUI) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self updateShowOrHideUI];
-        });
-    }
+    if (canHideUI) dispatch_async(dispatch_get_main_queue(), ^{ [self __ttgUpdateUI]; });
 }
 
 %new
-- (void)hideUIButtonPressed:(UIButton *)sender {
+- (void)__ttgHideUI:(UIButton *)sender {
     AWEFeedContainerViewController *afcVC = (AWEFeedContainerViewController *)[%c(AWEFeedContainerViewController) sharedInstance];
     afcVC.isUIHidden = !afcVC.isUIHidden;
-    [self updateShowOrHideUI];
+    [self __ttgUpdateUI];
 }
 
 %new
-- (void)downloadButtonPressed:(UIButton *)sender {
-    NSString *videoURLString = self.model.video.playURL.originURLList.firstObject;
-    if (!videoURLString.length) {
-        TTGShowAlert(@"No video URL found", @"Error", self);
-        return;
-    }
-    if ([videoURLString containsString:@".m3u8"]) {
-        TTGShowAlert(@"This video format is not supported (.m3u8 file extension)", @"Not supported", self);
-        return;
-    }
+- (void)__ttgDownload:(UIButton *)sender {
+    NSString *url = TTGGetVideoURL(self.model.video);
+    if (!url.length) { TTGShowAlert(@"No video URL found", @"Error", self); return; }
+    if ([url containsString:@".m3u8"]) { TTGShowAlert(@"m3u8 not supported", @"Not supported", self); return; }
 
-    // request add-only photo permission, then download with progress
     void (^startDownload)(void) = ^{
-        UIAlertController *progressAlert = [UIAlertController alertControllerWithTitle:@"Downloading" message:@"0%" preferredStyle:UIAlertControllerStyleAlert];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self presentViewController:progressAlert animated:YES completion:nil];
-        });
-
-        TTGDownloader *downloader = [TTGDownloader new];
-        downloader.onProgress = ^(double fraction) {
-            progressAlert.message = [NSString stringWithFormat:@"%.0f%%", fraction * 100.0];
-        };
-        downloader.onDone = ^(BOOL success, NSString *error) {
+        UIAlertController *progress = [UIAlertController alertControllerWithTitle:@"Downloading…" message:@"0%" preferredStyle:UIAlertControllerStyleAlert];
+        [self presentViewController:progress animated:YES completion:nil];
+        TTGDownloader *dl = [TTGDownloader new];
+        dl.onProgress = ^(double f) { progress.message = [NSString stringWithFormat:@"%.0f%%", f * 100]; };
+        dl.onDone = ^(BOOL ok, NSString *err) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                [progressAlert dismissViewControllerAnimated:NO completion:^{
-                    UIViewController *top = TTGTopViewController();
-                    TTGShowAlert(success ? @"Saved to Photos album \"TikTok\"" : [NSString stringWithFormat:@"%@", error ?: @"Unknown error"], success ? @"Done" : @"Failed", top);
+                [progress dismissViewControllerAnimated:NO completion:^{
+                    TTGShowAlert(ok ? @"Saved to Photos" : (err ?: @"Failed"), ok ? @"Done" : @"Error", TTGTopViewController());
                 }];
             });
         };
-        [downloader downloadURLString:videoURLString];
+        [dl downloadURLString:url];
     };
 
     if (@available(iOS 14.0, *)) {
-        [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelAddOnly handler:^(PHAuthorizationStatus status) {
-            startDownload();
-        }];
+        [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelAddOnly handler:^(PHAuthorizationStatus s) { startDownload(); }];
     } else {
-        [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
-            startDownload();
-        }];
+        [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus s) { startDownload(); }];
     }
 }
 
 %new
-- (void)updateShowOrHideUI {
+- (void)__ttgPIP:(UIButton *)sender {
+    NSString *url = TTGGetVideoURL(self.model.video);
+    TTGTogglePIP(url);
+}
+
+%new
+- (void)__ttgUpdateUI {
     AWEFeedContainerViewController *afcVC = (AWEFeedContainerViewController *)[%c(AWEFeedContainerViewController) sharedInstance];
     [self setHide:afcVC.isUIHidden];
     [self.downloadButton setHidden:afcVC.isUIHidden];
     [self.hideUIButton setImage:afcVC.isUIHidden ? TTGIcon(icon_showui, icon_showui_len) : TTGIcon(icon_hideui, icon_hideui_len) forState:UIControlStateNormal];
+    [self.pipButton setHidden:afcVC.isUIHidden];
     if ([self.parentViewController isKindOfClass:%c(AWEFeedCellViewController)]) {
         [afcVC setAccessoriesHidden:afcVC.isUIHidden];
     }
-
     afcVC.tabControl.hidden = afcVC.isUIHidden;
     afcVC.specialEventEntranceView.hidden = afcVC.isUIHidden;
 }
@@ -310,17 +598,45 @@ static AWEFeedContainerViewController *__weak sharedInstance;
 %hook AWEFavoriteAwemeViewController
 - (id)init {
     if (enableFavoritesCollections) {
-        return [%c(TTKFavoriteAwemeCollectionsViewController) new];
-    } else {
-        return %orig;
+        Class cls = objc_getClass("TTKFavoriteAwemeCollectionsViewController");
+        if (cls) return [cls new];
     }
+    return %orig;
 }
 %end
-%end
+%end // group CoreLogic
+
+#pragma mark - Ctor
 
 %ctor {
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (CFNotificationCallback) reloadPrefs, CFSTR(PREF_CHANGED_NOTIF), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+    // Observe pref changes so toggles take effect live
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
+                                    (CFNotificationCallback)reloadPrefs,
+                                    CFSTR(PREF_CHANGED_NOTIF), NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
     reloadPrefs();
 
+    // Maintain audio session for background play when enabled
+    if (enableBackgroundPlay) TTGEnableBackgroundPlay();
+
+    // Create floating settings window (top-left dot, draggable)
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (@available(iOS 13.0, *)) {
+            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if ([scene isKindOfClass:[UIWindowScene class]]) {
+                    TTGSettingsWindow *w = [[TTGSettingsWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+                    [w makeKeyAndVisible];
+                    break;
+                }
+            }
+        } else {
+            CGRect scr = [UIScreen mainScreen].bounds;
+            TTGSettingsWindow *w = [[TTGSettingsWindow alloc] initWithFrame:scr];
+            w.windowLevel = UIWindowLevelNormal + 1;
+            [w makeKeyAndVisible];
+        }
+    });
+
+    %init(SecurityBypass);
     %init(CoreLogic);
 }

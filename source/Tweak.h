@@ -2,8 +2,8 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <Photos/Photos.h>
+#import <objc/runtime.h>
 
-// LCSign injection build: prefs live inside the app sandbox
 #define PREF_CHANGED_NOTIF "com.haoict.tiktokgodpref/PrefChanged"
 
 @interface AWEURLModel : NSObject
@@ -37,17 +37,24 @@
 @interface AWEFeedContainerViewController : UIViewController
 @property(retain, nonatomic) UIView *tabControl;
 @property(retain, nonatomic) UIView *specialEventEntranceView;
-@property(nonatomic) BOOL isUIHidden; // new property
+@property(nonatomic) BOOL isUIHidden;
 - (void)setAccessoriesHidden:(BOOL)arg1;
-+ (AWEFeedContainerViewController *)sharedInstance; // new
++ (AWEFeedContainerViewController *)sharedInstance;
 @end
 
 @interface AWEPlayInteractionViewController : UIViewController
 @property(retain, nonatomic) AWEAwemeModel *model;
-@property(nonatomic, retain) UIButton *hideUIButton; // new property
-@property(nonatomic, retain) UIButton *downloadButton; // new property
+@property(nonatomic, retain) UIButton *hideUIButton;
+@property(nonatomic, retain) UIButton *downloadButton;
+@property(nonatomic, retain) UIButton *pipButton;
 - (void)setHide:(BOOL)arg1;
-- (void)updateShowOrHideUI; // new
+@end
+
+@interface AWEPlayInteractionViewController (TTGInternal)
+- (void)__ttgHideUI:(UIButton *)sender;
+- (void)__ttgDownload:(UIButton *)sender;
+- (void)__ttgPIP:(UIButton *)sender;
+- (void)__ttgUpdateUI;
 @end
 
 @interface AWEMediaDownloadOptions : NSObject
