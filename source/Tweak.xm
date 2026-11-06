@@ -13,9 +13,84 @@ static void TTGDownloadMusic(void);
 
 @class TTGSettingsViewController;
 
+// 自定义手势类：完全绕过系统 UILongPressGestureRecognizer 机制
+// 自己用 dispatch_after 控时，0.4s 内手指没移动则立刻 BEGAN
+// 没有任何 delegate 依赖问题
+@interface TTGOneFingerHoldRecognizer : UIGestureRecognizer
+@property (nonatomic, assign) NSTimeInterval holdDuration;  // 默认 0.4
+@property (nonatomic, assign) CGFloat allowableMovement;    // 默认 10
+@end
+
+@implementation TTGOneFingerHoldRecognizer {
+    CGPoint _startPoint;
+    BOOL _fired;
+    __block BOOL _cancelled;
+}
+
+- (instancetype)initWithTarget:(id)target action:(SEL)action {
+    if ((self = [super initWithTarget:target action:action])) {
+        _holdDuration = 0.4;
+        _allowableMovement = 10;
+        self.cancelsTouchesInView = YES;
+        self.delaysTouchesBegan = NO;
+        self.delaysTouchesEnded = NO;
+    }
+    return self;
+}
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    if (touches.count != 1) { self.state = UIGestureRecognizerStateFailed; return; }
+    _startPoint = [[touches anyObject] locationInView:self.view];
+    _fired = NO;
+    _cancelled = NO;
+    __weak typeof(self) wself = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(self.holdDuration * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (_cancelled) return;
+        __strong typeof(wself) self = wself;
+        if (!self) return;
+        if (self.state == UIGestureRecognizerStatePossible) {
+            self->_fired = YES;
+            self.state = UIGestureRecognizerStateBegan;
+        }
+    });
+}
+
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    if (_fired) { self.state = UIGestureRecognizerStateChanged; return; }
+    CGPoint now = [[touches anyObject] locationInView:self.view];
+    CGFloat dx = now.x - _startPoint.x;
+    CGFloat dy = now.y - _startPoint.y;
+    if (sqrtf(dx*dx + dy*dy) > self.allowableMovement) {
+        _cancelled = YES;
+        self.state = UIGestureRecognizerStateFailed;
+    }
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    _cancelled = YES;
+    if (_fired && self.state != UIGestureRecognizerStateEnded) {
+        self.state = UIGestureRecognizerStateEnded;
+    } else {
+        self.state = UIGestureRecognizerStateFailed;
+    }
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    _cancelled = YES;
+    self.state = UIGestureRecognizerStateCancelled;
+}
+
+- (void)reset {
+    [super reset];
+    _cancelled = YES;
+    _fired = NO;
+}
+@end
+
 @interface TTGLongPressHandler : NSObject
 + (instancetype)shared;
-- (void)handleSingleLongPress:(UILongPressGestureRecognizer *)gr;
+- (void)handleSingleLongPress:(UIGestureRecognizer *)gr;
 - (void)handleDoubleLongPress:(UILongPressGestureRecognizer *)gr;
 @end
 
@@ -794,8 +869,15 @@ static NSHashTable *_ttg_windowsWithGesture = nil;
     UIViewController *vc = [[cls alloc] init];
     if (!vc) return;
     vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
-    vc.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
-    [topVC presentViewController:vc animated:YES completion:nil];
+    // 不用系统 transitionStyle —— CrossDissolve 本身就有一层淡入，再叠加 present 动画 = 闪两次
+    vc.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
+    // 用 animated:NO + 自己做淡入 → 只有一层动画，不闪
+    vc.view.alpha = 0;
+    [topVC presentViewController:vc animated:NO completion:^{
+        [UIView animateWithDuration:0.2 animations:^{
+            vc.view.alpha = 1;
+        }];
+    }];
 }
 
 // MARK: - UIGestureRecognizerDelegate
@@ -826,17 +908,12 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     });
     if ([_ttg_windowsWithGesture containsObject:win]) return;
 
-    // 单指长按（0.4s，比 TikTok 自带的 0.5s 更快）→ 动作面板
-    UILongPressGestureRecognizer *single = [[UILongPressGestureRecognizer alloc]
+    // 单指长按 —— 用完全自定义的手势类，自己控 timer
+    // 不跟系统 UILongPressGestureRecognizer 有任何依赖，绕过所有 require/simultaneous 问题
+    TTGOneFingerHoldRecognizer *single = [[TTGOneFingerHoldRecognizer alloc]
         initWithTarget:[TTGLongPressHandler shared] action:@selector(handleSingleLongPress:)];
-    single.minimumPressDuration = 0.4;
-    single.numberOfTouchesRequired = 1;
-    single.allowableMovement = 10;   // 关键：手指一动就 fail，不影响滑动
-    single.cancelsTouchesInView = YES;  // 默认就是 YES，成功时 cancel 子视图长按
-    single.delaysTouchesBegan = NO;
-    single.delaysTouchesEnded = NO;
 
-    // 双指长按（0.5s）→ 设置面板
+    // 双指长按（保持系统类，因为它能用）
     UILongPressGestureRecognizer *dbl = [[UILongPressGestureRecognizer alloc]
         initWithTarget:[TTGLongPressHandler shared] action:@selector(handleDoubleLongPress:)];
     dbl.minimumPressDuration = 0.5;
@@ -846,13 +923,8 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     dbl.delaysTouchesBegan = NO;
     dbl.delaysTouchesEnded = NO;
 
-    // 关键：单指等双指失败 → 双指操作时单指不会误触
-    [single requireGestureRecognizerToFail:dbl];
-
-    // delegate：让所有子视图上的手势（包括 TikTok 自带的）等我们先失败
-    // shouldBeRequiredToFailByGestureRecognizer: 反向依赖
-    // shouldRecognizeSimultaneouslyWithGestureRecognizer: 允许同时识别
-    single.delegate = (id<UIGestureRecognizerDelegate>)[TTGLongPressHandler shared];
+    // 自定义单指手势 不需要任何 delegate —— 自己 timer 到点直接 BEGAN，无视任何其他手势
+    // 双指 delegate：让子视图长按等双指失败（避免双指操作时 TikTok 内部长按误触）
     dbl.delegate = (id<UIGestureRecognizerDelegate>)[TTGLongPressHandler shared];
 
     [win addGestureRecognizer:single];
