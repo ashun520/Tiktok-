@@ -62,7 +62,7 @@ static void TTGShowToast(NSString *msg) {
         CGFloat w = MIN(MAX(sz.width + 44, 110), 260);
         CGFloat h = 40;
         CGFloat statusBar = TTGStatusBarHeight();
-        CGFloat y = statusBar + 10;
+        CGFloat y = statusBar + 68;
 
         UIView *toast = [[UIView alloc] initWithFrame:CGRectMake((win.bounds.size.width - w)/2, y, w, h)];
         toast.layer.cornerRadius = 20;
@@ -457,15 +457,24 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
     self = [super initWithFrame:frame];
     if (self) {
         @try {
-            self.backgroundColor = [UIColor colorWithRed:0.9 green:0.2 blue:0.2 alpha:0.95];
+            self.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
             self.layer.cornerRadius = frame.size.width / 2;
+            self.layer.borderWidth = 1.0;
+            self.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.25].CGColor;
             self.layer.shadowColor = [UIColor blackColor].CGColor;
-            self.layer.shadowOpacity = 0.4;
-            self.layer.shadowOffset = CGSizeMake(0, 2);
-            self.layer.shadowRadius = 4;
-            [self setTitle:@"⬇" forState:UIControlStateNormal];
-            [self setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-            self.titleLabel.font = [UIFont boldSystemFontOfSize:18];
+            self.layer.shadowOpacity = 0.35;
+            self.layer.shadowOffset = CGSizeMake(0, 4);
+            self.layer.shadowRadius = 10;
+            if (@available(iOS 13.0, *)) {
+                UIImage *img = [UIImage systemImageNamed:@"arrow.down"];
+                UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightSemibold];
+                [self setImage:[img imageWithConfiguration:cfg] forState:UIControlStateNormal];
+                [self setTintColor:[UIColor whiteColor]];
+            } else {
+                [self setTitle:@"↓" forState:UIControlStateNormal];
+                [self setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+                self.titleLabel.font = [UIFont boldSystemFontOfSize:22];
+            }
         } @catch (NSException *e) {}
     }
     return self;
@@ -809,8 +818,8 @@ __attribute__((constructor)) static void TTGInit(void) {
             UIWindow *win = TTGFrontmostWindow();
             if (!win) { NSLog(@"[TTG] ❌ 没找到 window"); return; }
 
-            CGFloat startY = 50;
-            if (@available(iOS 11.0, *)) startY = 50 + win.safeAreaInsets.top + 34;
+            CGFloat startY = 80;
+            if (@available(iOS 11.0, *)) startY = 80 + win.safeAreaInsets.top + 34;
 
             TTGFloatingButton *btn = [[TTGFloatingButton alloc] initWithFrame:CGRectMake(0, startY, 44, 44)];
             [win addSubview:btn];
