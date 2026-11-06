@@ -4,6 +4,8 @@
 #import <Photos/Photos.h>
 #import <objc/message.h>
 
+@class TTGSettingsViewController;
+
 #pragma mark - 全局开关
 
 static BOOL noads = YES;
@@ -678,7 +680,8 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
 }
 
 - (UIStatusBarStyle)preferredStatusBarStyle {
-    return UIStatusBarStyleDarkContent;
+    if (@available(iOS 13.0, *)) return UIStatusBarStyleDarkContent;
+    return UIStatusBarStyleDefault;
 }
 
 @end
