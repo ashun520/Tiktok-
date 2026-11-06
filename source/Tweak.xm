@@ -457,22 +457,34 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
     self = [super initWithFrame:frame];
     if (self) {
         @try {
-            self.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55];
+            self.backgroundColor = [UIColor clearColor];
             self.layer.cornerRadius = frame.size.width / 2;
             self.layer.borderWidth = 1.0;
-            self.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.25].CGColor;
+            self.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.35].CGColor;
             self.layer.shadowColor = [UIColor blackColor].CGColor;
-            self.layer.shadowOpacity = 0.35;
+            self.layer.shadowOpacity = 0.25;
             self.layer.shadowOffset = CGSizeMake(0, 4);
-            self.layer.shadowRadius = 10;
+            self.layer.shadowRadius = 12;
             if (@available(iOS 13.0, *)) {
+                UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialLight];
+                UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blur];
+                blurView.frame = self.bounds;
+                blurView.layer.cornerRadius = frame.size.width / 2;
+                blurView.clipsToBounds = YES;
+                blurView.userInteractionEnabled = NO;
+                UIView *tint = [[UIView alloc] initWithFrame:self.bounds];
+                tint.backgroundColor = [UIColor colorWithWhite:1 alpha:0.18];
+                tint.layer.cornerRadius = frame.size.width / 2;
+                tint.userInteractionEnabled = NO;
+                [blurView.contentView addSubview:tint];
+                [self addSubview:blurView];
                 UIImage *img = [UIImage systemImageNamed:@"arrow.down"];
-                UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightSemibold];
+                UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightSemibold];
                 [self setImage:[img imageWithConfiguration:cfg] forState:UIControlStateNormal];
-                [self setTintColor:[UIColor whiteColor]];
+                [self setTintColor:[UIColor colorWithWhite:0 alpha:0.7]];
             } else {
                 [self setTitle:@"↓" forState:UIControlStateNormal];
-                [self setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+                [self setTitleColor:[UIColor colorWithWhite:0 alpha:0.8] forState:UIControlStateNormal];
                 self.titleLabel.font = [UIFont boldSystemFontOfSize:22];
             }
         } @catch (NSException *e) {}
@@ -567,18 +579,28 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
 
     // 悬浮卡片（居中，不是全屏）
     _card = [[UIView alloc] init];
-    if (@available(iOS 13.0, *)) {
-        _card.backgroundColor = [UIColor systemBackgroundColor];
-    } else {
-        _card.backgroundColor = [UIColor whiteColor];
-    }
+    _card.backgroundColor = [UIColor clearColor];
     _card.layer.cornerRadius = 22;
     _card.layer.shadowColor = [UIColor blackColor].CGColor;
-    _card.layer.shadowOpacity = 0.28;
+    _card.layer.shadowOpacity = 0.22;
     _card.layer.shadowOffset = CGSizeMake(0, 10);
     _card.layer.shadowRadius = 28;
     _card.clipsToBounds = NO;
     [self.view addSubview:_card];
+    // 磨砂背景层（加在 card 最底层，子视图会自动在它上面）
+    UIBlurEffectStyle bstyle;
+    if (@available(iOS 13.0, *)) bstyle = UIBlurEffectStyleSystemMaterialLight;
+    else bstyle = UIBlurEffectStyleLight;
+    UIBlurEffect *be = [UIBlurEffect effectWithStyle:bstyle];
+    UIVisualEffectView *bvg = [[UIVisualEffectView alloc] initWithEffect:be];
+    bvg.tag = 999;
+    bvg.layer.cornerRadius = 22;
+    bvg.clipsToBounds = YES;
+    UIView *cardTint = [[UIView alloc] init];
+    cardTint.backgroundColor = [UIColor colorWithWhite:1 alpha:0.12];
+    cardTint.tag = 998;
+    [_card addSubview:bvg];
+    [_card addSubview:cardTint];
 
     // 顶部标题区（卡片内部）
     UILabel *titleLabel = [[UILabel alloc] init];
@@ -684,6 +706,11 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
     }
     CGFloat cardX = (b.size.width - cardW) / 2;
     _card.frame = CGRectMake(cardX, cardTop, cardW, cardH);
+    // 同步磨砂背景层
+    UIVisualEffectView *bvg = (UIVisualEffectView *)[_card viewWithTag:999];
+    UIView *cardTint = (UIView *)[_card viewWithTag:998];
+    bvg.frame = _card.bounds;
+    cardTint.frame = _card.bounds;
 
     // 卡片内部子视图
     UIView *card = _card;
