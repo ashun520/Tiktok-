@@ -58,45 +58,52 @@ static void TTGShowToast(NSString *msg) {
     UIWindow *win = TTGFrontmostWindow();
     if (!win) return;
     @try {
-        // 自动宽度
-        CGSize sz = [msg sizeWithAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:14 weight:UIFontWeightMedium]}];
-        CGFloat w = MIN(MAX(sz.width + 40, 120), 280);
-        CGFloat h = 44;
-        CGFloat y = win.bounds.size.height - 120 - win.safeAreaInsets.bottom;
+        CGSize sz = [msg sizeWithAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold]}];
+        CGFloat w = MIN(MAX(sz.width + 44, 110), 260);
+        CGFloat h = 40;
+        CGFloat statusBar = TTGStatusBarHeight();
+        CGFloat y = statusBar + 10;
 
         UIView *toast = [[UIView alloc] initWithFrame:CGRectMake((win.bounds.size.width - w)/2, y, w, h)];
-        toast.backgroundColor = [UIColor colorWithWhite:0 alpha:0.72];
-        toast.layer.cornerRadius = 22;
+        toast.layer.cornerRadius = 20;
         toast.layer.shadowColor = [UIColor blackColor].CGColor;
-        toast.layer.shadowOpacity = 0.25;
+        toast.layer.shadowOpacity = 0.18;
         toast.layer.shadowOffset = CGSizeMake(0, 4);
-        toast.layer.shadowRadius = 12;
+        toast.layer.shadowRadius = 10;
+        toast.clipsToBounds = NO;
 
-        // 磨砂效果
-        UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialDark];
+        // 磨砂背景
+        UIBlurEffectStyle bs;
+        if (@available(iOS 13.0, *)) bs = UIBlurEffectStyleSystemMaterial;
+        else bs = UIBlurEffectStyleLight;
+        UIBlurEffect *blur = [UIBlurEffect effectWithStyle:bs];
         UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blur];
-        blurView.frame = toast.bounds;
-        blurView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        blurView.layer.cornerRadius = 22;
+        blurView.frame = CGRectMake(0, 0, w, h);
+        blurView.layer.cornerRadius = 20;
         blurView.clipsToBounds = YES;
-        [toast insertSubview:blurView atIndex:0];
+        // 加一层淡色让字更清晰
+        UIView *tint = [[UIView alloc] initWithFrame:blurView.bounds];
+        tint.backgroundColor = [UIColor colorWithWhite:1 alpha:0.25];
+        tint.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [blurView.contentView addSubview:tint];
+        [toast addSubview:blurView];
 
-        UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(12, 0, w - 24, h)];
+        UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(10, 0, w - 20, h)];
         label.text = msg;
-        label.textColor = [UIColor whiteColor];
-        label.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+        label.textColor = [UIColor colorWithWhite:0 alpha:0.85];
+        label.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
         label.textAlignment = NSTextAlignmentCenter;
         [toast addSubview:label];
 
         toast.alpha = 0;
-        toast.transform = CGAffineTransformMakeTranslation(0, 20);
+        toast.transform = CGAffineTransformMakeTranslation(0, -14);
         [win addSubview:toast];
-        [UIView animateWithDuration:0.3 delay:0 usingSpringWithDamping:0.7 initialSpringVelocity:0.5 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        [UIView animateWithDuration:0.3 delay:0 usingSpringWithDamping:0.75 initialSpringVelocity:0.5 options:UIViewAnimationOptionCurveEaseOut animations:^{
             toast.alpha = 1;
             toast.transform = CGAffineTransformIdentity;
         } completion:^(BOOL _) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [UIView animateWithDuration:0.25 animations:^{
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [UIView animateWithDuration:0.2 animations:^{
                     toast.alpha = 0;
                     toast.transform = CGAffineTransformMakeTranslation(0, -10);
                 } completion:^(BOOL __) { [toast removeFromSuperview]; }];
@@ -534,13 +541,8 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
 @implementation TTGSettingsViewController {
     NSArray *_rows;
     UITableView *_tableView;
-    UIView *_bg;
-    UIVisualEffectView *_blurView;
-    UILabel *_titleLabel;
-    UILabel *_subLabel;
-    UIButton *_closeBtn;
-    UIButton *_allOnBtn;
-    UIView *_footerLabel;
+    UIView *_dimmingView;
+    UIView *_card;
 }
 
 - (void)viewDidLoad {
@@ -548,61 +550,56 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
     self.view.backgroundColor = [UIColor clearColor];
     self.view.opaque = NO;
 
-    // 背景：半透明黑色 + 磨砂玻璃
-    _bg = [[UIView alloc] initWithFrame:self.view.bounds];
-    _bg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    _bg.backgroundColor = [UIColor colorWithWhite:0 alpha:0.25];
-    [self.view addSubview:_bg];
+    // 暗色遮罩（不磨砂了，用户说太磨砂看不见字）
+    _dimmingView = [[UIView alloc] initWithFrame:self.view.bounds];
+    _dimmingView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _dimmingView.backgroundColor = [UIColor colorWithWhite:0 alpha:0.35];
+    [self.view addSubview:_dimmingView];
 
-    // 磨砂玻璃层（液态玻璃）
-    UIBlurEffectStyle blurStyle;
+    // 悬浮卡片（居中，不是全屏）
+    _card = [[UIView alloc] init];
     if (@available(iOS 13.0, *)) {
-        blurStyle = UIBlurEffectStyleSystemMaterial;
+        _card.backgroundColor = [UIColor systemBackgroundColor];
     } else {
-        blurStyle = UIBlurEffectStyleLight;
+        _card.backgroundColor = [UIColor whiteColor];
     }
-    UIBlurEffect *blur = [UIBlurEffect effectWithStyle:blurStyle];
-    _blurView = [[UIVisualEffectView alloc] initWithEffect:blur];
-    _blurView.frame = self.view.bounds;
-    _blurView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    _blurView.alpha = 0.78;   // 更透一点
-    [self.view addSubview:_blurView];
+    _card.layer.cornerRadius = 22;
+    _card.layer.shadowColor = [UIColor blackColor].CGColor;
+    _card.layer.shadowOpacity = 0.28;
+    _card.layer.shadowOffset = CGSizeMake(0, 10);
+    _card.layer.shadowRadius = 28;
+    _card.clipsToBounds = NO;
+    [self.view addSubview:_card];
 
-    // 顶部大标题
-    _titleLabel = [[UILabel alloc] init];
-    _titleLabel.text = @"插件设置";
-    _titleLabel.font = [UIFont boldSystemFontOfSize:28];
-    _titleLabel.textColor = [UIColor colorWithWhite:0 alpha:0.88];
-    [self.view addSubview:_titleLabel];
+    // 顶部标题区（卡片内部）
+    UILabel *titleLabel = [[UILabel alloc] init];
+    titleLabel.text = @"插件设置";
+    titleLabel.font = [UIFont boldSystemFontOfSize:20];
+    titleLabel.textColor = [UIColor colorWithWhite:0 alpha:0.9];
+    titleLabel.tag = 101;
+    [_card addSubview:titleLabel];
 
-    // 副标题
-    _subLabel = [[UILabel alloc] init];
-    _subLabel.text = @"TikTok God · LCSign 注入版";
-    _subLabel.font = [UIFont systemFontOfSize:13];
-    _subLabel.textColor = [UIColor colorWithWhite:0 alpha:0.5];
-    [self.view addSubview:_subLabel];
+    // 关闭按钮（卡片右上角）
+    UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [closeBtn setTitle:@"✕" forState:UIControlStateNormal];
+    closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:14];
+    [closeBtn setTitleColor:[UIColor colorWithWhite:0 alpha:0.6] forState:UIControlStateNormal];
+    closeBtn.backgroundColor = [UIColor colorWithWhite:0 alpha:0.06];
+    closeBtn.layer.cornerRadius = 13;
+    closeBtn.tag = 102;
+    [closeBtn addTarget:self action:@selector(dismissSelf) forControlEvents:UIControlEventTouchUpInside];
+    [_card addSubview:closeBtn];
 
-    // 关闭按钮（右上角）
-    _closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    [_closeBtn setTitle:@"✕" forState:UIControlStateNormal];
-    _closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:15];
-    [_closeBtn setTitleColor:[UIColor colorWithWhite:0 alpha:0.7] forState:UIControlStateNormal];
-    _closeBtn.backgroundColor = [UIColor colorWithWhite:1 alpha:0.45];
-    _closeBtn.layer.cornerRadius = 15;
-    _closeBtn.layer.borderWidth = 0.5;
-    _closeBtn.layer.borderColor = [UIColor colorWithWhite:0 alpha:0.08].CGColor;
-    [_closeBtn addTarget:self action:@selector(dismissSelf) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:_closeBtn];
-
-    // 全部开启按钮（标题旁边）
-    _allOnBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    [_allOnBtn setTitle:@"🔓 全部开启" forState:UIControlStateNormal];
-    _allOnBtn.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
-    [_allOnBtn setTitleColor:[UIColor colorWithRed:0.1 green:0.5 blue:1 alpha:1] forState:UIControlStateNormal];
-    _allOnBtn.backgroundColor = [UIColor colorWithRed:0.1 green:0.5 blue:1 alpha:0.12];
-    _allOnBtn.layer.cornerRadius = 14;
-    [_allOnBtn addTarget:self action:@selector(toggleAllOn) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:_allOnBtn];
+    // 全部开启按钮
+    UIButton *allOnBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [allOnBtn setTitle:@"🔓 全部开启" forState:UIControlStateNormal];
+    allOnBtn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+    [allOnBtn setTitleColor:[UIColor colorWithRed:0.1 green:0.5 blue:1 alpha:1] forState:UIControlStateNormal];
+    allOnBtn.backgroundColor = [UIColor colorWithRed:0.1 green:0.5 blue:1 alpha:0.1];
+    allOnBtn.layer.cornerRadius = 12;
+    allOnBtn.tag = 103;
+    [allOnBtn addTarget:self action:@selector(toggleAllOn) forControlEvents:UIControlEventTouchUpInside];
+    [_card addSubview:allOnBtn];
 
     // 数据
     struct { NSString *t; BOOL *p; } raw[] = {
@@ -623,64 +620,90 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
     }
     _rows = arr;
 
-    // TableView（透明背景，放在卡片里）
+    // TableView
     _tableView = [[UITableView alloc] init];
-    _tableView.backgroundColor = [UIColor colorWithWhite:1 alpha:0.42];
-    _tableView.layer.cornerRadius = 18;
-    _tableView.layer.borderWidth = 0.5;
-    _tableView.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.55].CGColor;
-    _tableView.clipsToBounds = YES;
+    _tableView.backgroundColor = [UIColor clearColor];
     _tableView.dataSource = self;
     _tableView.delegate = self;
-    _tableView.rowHeight = 50;
+    _tableView.rowHeight = 48;
     _tableView.separatorStyle = UITableViewCellSeparatorStyleSingleLine;
+    _tableView.separatorInset = UIEdgeInsetsMake(0, 16, 0, 16);
     _tableView.separatorColor = [UIColor colorWithWhite:0 alpha:0.08];
+    _tableView.scrollEnabled = NO;   // 卡片高度刚好容纳 9 行，不滚
     _tableView.tableFooterView = [[UIView alloc] init];
-    [self.view addSubview:_tableView];
+    [_card addSubview:_tableView];
 
-    // 底部署名
-    _footerLabel = [[UILabel alloc] init];
-    ((UILabel *)_footerLabel).text = @"by ashun520  ·  LCSign 注入版";
-    ((UILabel *)_footerLabel).font = [UIFont systemFontOfSize:11];
-    ((UILabel *)_footerLabel).textColor = [UIColor colorWithWhite:0 alpha:0.4];
-    ((UILabel *)_footerLabel).textAlignment = NSTextAlignmentCenter;
-    [self.view addSubview:_footerLabel];
+    // 底部署名（卡片内）
+    UILabel *footer = [[UILabel alloc] init];
+    footer.text = @"by ashun520  ·  LCSign 注入版";
+    footer.font = [UIFont systemFontOfSize:10.5];
+    footer.textColor = [UIColor colorWithWhite:0 alpha:0.35];
+    footer.textAlignment = NSTextAlignmentCenter;
+    footer.tag = 104;
+    [_card addSubview:footer];
 
-    // 点空白关闭
+    // 点遮罩关闭
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dismissSelf)];
     tap.cancelsTouchesInView = NO;
-    [_bg addGestureRecognizer:tap];
+    [_dimmingView addGestureRecognizer:tap];
 }
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-
     CGRect b = self.view.bounds;
-    CGFloat statusBar = TTGStatusBarHeight();
-    CGFloat safeTop = statusBar + 8;
-    CGFloat safeBottom = 0;
-    if (@available(iOS 11.0, *)) safeBottom = self.view.safeAreaInsets.bottom;
+    _dimmingView.frame = b;
 
-    // 背景占满
-    _bg.frame = b;
-    _blurView.frame = b;
+    // 卡片尺寸：宽 = 屏宽 - 32，高 = 标题区(70) + 9行(48*9) + 底部署名(32) = 534
+    CGFloat cardW = MIN(b.size.width - 32, 420);
+    CGFloat rowH = 48;
+    CGFloat tableH = rowH * _rows.count;
+    CGFloat headerH = 72;
+    CGFloat footerH = 32;
+    CGFloat cardH = headerH + tableH + footerH;
 
-    CGFloat W = b.size.width;
+    CGFloat topInset = TTGStatusBarHeight();
+    CGFloat availableTop = topInset + 20;
+    CGFloat availableBottom = b.size.height - (b.size.height - (_card.frame.origin.y + cardH)) - 20;  // not used
 
-    // 顶部标题区
-    _titleLabel.frame = CGRectMake(20, safeTop, W - 40, 36);
-    _subLabel.frame = CGRectMake(20, safeTop + 38, W - 40, 18);
-    _closeBtn.frame = CGRectMake(W - 46, safeTop + 6, 30, 30);
-    _allOnBtn.frame = CGRectMake(20, safeTop + 64, 100, 28);
+    // 卡片居中，但上半部分优先（避开状态栏，也不碰到底部 tab）
+    CGFloat maxTop = topInset + 60;
+    CGFloat minBottom = 60;
+    CGFloat idealTop = (b.size.height - cardH) / 2;
+    CGFloat cardTop = MAX(maxTop, MIN(idealTop, b.size.height - cardH - minBottom));
+    if (cardTop > b.size.height - cardH - minBottom) {
+        cardTop = b.size.height - cardH - minBottom;
+    }
+    CGFloat cardX = (b.size.width - cardW) / 2;
+    _card.frame = CGRectMake(cardX, cardTop, cardW, cardH);
 
-    // 卡片和 table
-    CGFloat cardTop = safeTop + 100;
-    CGFloat footerH = 28;
-    CGFloat cardBottom = b.size.height - safeBottom - footerH - 10;
-    _tableView.frame = CGRectMake(14, cardTop, W - 28, cardBottom - cardTop);
+    // 卡片内部子视图
+    UIView *card = _card;
+    CGFloat W = cardW;
 
-    // 底部署名
-    _footerLabel.frame = CGRectMake(0, b.size.height - safeBottom - 22, W, 20);
+    UILabel *titleLabel = (UILabel *)[card viewWithTag:101];
+    UIButton *closeBtn = (UIButton *)[card viewWithTag:102];
+    UIButton *allOnBtn = (UIButton *)[card viewWithTag:103];
+    UILabel *footer = (UILabel *)[card viewWithTag:104];
+
+    titleLabel.frame = CGRectMake(18, 16, W - 90, 26);
+    closeBtn.frame = CGRectMake(W - 40, 14, 26, 26);
+    allOnBtn.frame = CGRectMake(18, 46, 84, 22);
+
+    _tableView.frame = CGRectMake(0, headerH, W, tableH);
+
+    footer.frame = CGRectMake(0, headerH + tableH + 4, W, 22);
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    // 弹出动画：从缩放到正常
+    _card.transform = CGAffineTransformMakeScale(0.85, 0.85);
+    _card.alpha = 0;
+    [UIView animateWithDuration:0.35 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0.4 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        self->_card.transform = CGAffineTransformIdentity;
+        self->_card.alpha = 1;
+        self->_dimmingView.alpha = 1;
+    } completion:nil];
 }
 
 - (void)dismissSelf {
