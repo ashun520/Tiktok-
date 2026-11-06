@@ -4,6 +4,9 @@
 #import <Photos/Photos.h>
 #import <objc/message.h>
 
+@interface TTGSettingsViewController : UITableViewController
+@end
+
 #pragma mark - 全局开关
 
 static BOOL noads = YES;
@@ -476,14 +479,31 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
 }
 
 - (void)ttgShowSettings {
-    UIViewController *vc = TTGTopVC();
-    if (!vc) return;
+    UIViewController *vc = [[TTGSettingsViewController alloc] init];
+    UIViewController *top = TTGTopVC();
+    if (!top) return;
+    [top presentViewController:vc animated:YES completion:nil];
+}
 
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🤖 TikTok God 设置"
-        message:@"短按⬇下载  长按打开设置  拖动移动"
-        preferredStyle:UIAlertControllerStyleActionSheet];
+@end
 
-    struct { NSString *title; BOOL *ptr; } items[] = {
+#pragma mark - 设置页 TableViewController
+
+@implementation TTGSettingsViewController {
+    NSArray *_rows;   // @[@{@"title":..., @"key":..., @"ptr": &flag}]
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"TikTok God 设置";
+    if (@available(iOS 13.0, *)) {
+        self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
+    } else {
+        self.view.backgroundColor = [UIColor groupTableViewBackgroundColor];
+    }
+    self.tableView.tableFooterView = [[UIView alloc] init];
+
+    struct { NSString *t; BOOL *p; } raw[] = {
         { @"去广告", &noads },
         { @"无水印下载", &downloadWithoutWatermark },
         { @"自动连播下一个", &autoPlayNextVideo },
@@ -494,31 +514,55 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
         { @"后台继续播放", &enableBackgroundPlay },
         { @"安全检测绕过", &enableBypass },
     };
-    int count = sizeof(items)/sizeof(items[0]);
-
-    for (int i = 0; i < count; i++) {
-        BOOL *flagPtr = items[i].ptr;
-        BOOL isOn = flagPtr ? *flagPtr : NO;
-        NSString *title = [NSString stringWithFormat:@"%@ %@", isOn ? @"✅ 开" : @"⬜ 关", items[i].title];
-        [alert addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-            if (flagPtr) *flagPtr = !*flagPtr;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [self ttgShowSettings];
-            });
-        }]];
+    int n = sizeof(raw)/sizeof(raw[0]);
+    NSMutableArray *arr = [NSMutableArray array];
+    for (int i = 0; i < n; i++) {
+        [arr addObject:@{@"title": raw[i].t, @"ptr": [NSValue valueWithPointer:(const void *)raw[i].p]}];
     }
+    _rows = arr;
 
-    [alert addAction:[UIAlertAction actionWithTitle:@"全部开启" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a) {
-        noads = downloadWithoutWatermark = autoPlayNextVideo = changeRegion = showProgressBar = canHideUI = enablePIP = enableBackgroundPlay = enableBypass = YES;
-        TTGShowToast(@"✅ 所有功能已开启");
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
+    UIBarButtonItem *resetBtn = [[UIBarButtonItem alloc] initWithTitle:@"全部开启" style:UIBarButtonItemStylePlain target:self action:@selector(toggleAllOn)];
+    self.navigationItem.rightBarButtonItem = resetBtn;
+}
 
-    if (alert.popoverPresentationController) {
-        alert.popoverPresentationController.sourceView = self;
-        alert.popoverPresentationController.sourceRect = self.bounds;
+- (void)toggleAllOn {
+    noads = downloadWithoutWatermark = autoPlayNextVideo = changeRegion = showProgressBar = canHideUI = enablePIP = enableBackgroundPlay = enableBypass = YES;
+    [self.tableView reloadData];
+    TTGShowToast(@"✅ 所有功能已开启");
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return _rows.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *ReuseId = @"TTGSettingsCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:ReuseId];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:ReuseId];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
     }
-    [vc presentViewController:alert animated:YES completion:nil];
+    NSDictionary *row = _rows[indexPath.row];
+    BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
+    cell.textLabel.text = row[@"title"];
+
+    UISwitch *sw = (UISwitch *)cell.accessoryView;
+    if (!sw || ![sw isKindOfClass:[UISwitch class]]) {
+        sw = [[UISwitch alloc] init];
+        sw.onTintColor = [UIColor systemGreenColor];
+        cell.accessoryView = sw;
+    }
+    sw.tag = indexPath.row;
+    sw.on = flag ? *flag : NO;
+    [sw addTarget:self action:@selector(switchToggled:) forControlEvents:UIControlEventValueChanged];
+    return cell;
+}
+
+- (void)switchToggled:(UISwitch *)sw {
+    if (sw.tag < 0 || sw.tag >= (int)_rows.count) return;
+    NSDictionary *row = _rows[sw.tag];
+    BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
+    if (flag) *flag = sw.isOn;
 }
 
 @end
