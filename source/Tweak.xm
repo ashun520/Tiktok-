@@ -606,7 +606,7 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
 }
 
 - (UIButton *)makeActionButtonWithIcon:(NSString *)iconName title:(NSString *)title {
-    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIButton *btn = [UIButton buttonWithType:UIButtonTypeCustom];
     btn.backgroundColor = [UIColor colorWithWhite:1 alpha:0.35];
     btn.layer.cornerRadius = 14;
     btn.layer.borderColor = [UIColor colorWithWhite:0 alpha:0.08].CGColor;
@@ -614,17 +614,42 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
 
     UIImage *img = [UIImage systemImageNamed:iconName];
     if (img) {
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightSemibold];
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightSemibold];
         [btn setImage:[img imageWithConfiguration:cfg] forState:UIControlStateNormal];
         [btn setTintColor:[UIColor colorWithWhite:0 alpha:0.8]];
     }
     [btn setTitle:title forState:UIControlStateNormal];
     [btn setTitleColor:[UIColor colorWithWhite:0 alpha:0.85] forState:UIControlStateNormal];
     btn.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
-    btn.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
-    btn.imageEdgeInsets = UIEdgeInsetsMake(0, 14, 0, 8);
-    btn.titleEdgeInsets = UIEdgeInsetsMake(0, 4, 0, 0);
+    // 手动 layout：避免 UIButton 内部 edgeInsets 在不同 iOS 版本行为不一致
+    btn.imageEdgeInsets = UIEdgeInsetsZero;
+    btn.titleEdgeInsets = UIEdgeInsetsZero;
+    btn.contentHorizontalAlignment = UIControlContentHorizontalAlignmentCenter;
     return btn;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    // 让 icon 和 label 在按钮内居中排列：icon 左，label 右，间距 8
+    for (UIView *v in self.subviews) {
+        if ([v isKindOfClass:[UIButton class]]) {
+            UIButton *b = (UIButton *)v;
+            if (b.imageView && b.titleLabel) {
+                CGFloat W = b.bounds.size.width;
+                CGFloat H = b.bounds.size.height;
+                CGFloat iconW = b.imageView.intrinsicContentSize.width;
+                CGFloat iconH = b.imageView.intrinsicContentSize.height;
+                CGSize titleSz = [b.titleLabel sizeThatFits:CGSizeMake(W - iconW - 20, 24)];
+                CGFloat gap = 6;
+                CGFloat totalW = iconW + gap + titleSz.width;
+                CGFloat startX = (W - totalW) / 2;
+                CGFloat iconY = (H - iconH) / 2;
+                CGFloat titleY = (H - titleSz.height) / 2 - 2;
+                b.imageView.frame = CGRectMake(startX, iconY, iconW, iconH);
+                b.titleLabel.frame = CGRectMake(startX + iconW + gap, titleY, titleSz.width, titleSz.height);
+            }
+        }
+    }
 }
 
 - (void)show {
@@ -762,56 +787,34 @@ static NSHashTable *_ttg_windowsWithGesture = nil;
 - (void)handleDoubleLongPress:(UILongPressGestureRecognizer *)gr {
     if (gr.state != UIGestureRecognizerStateBegan) return;
     NSLog(@"[TTG] ✌️ 双指长按 → 设置面板");
-    // 用 addSubview 代替 presentViewController，避开 TikTok 的 VC present 逻辑导致闪一下
+    UIViewController *topVC = TTGTopVC();
+    if (!topVC) return;
     Class cls = NSClassFromString(@"TTGSettingsViewController");
     if (!cls) { NSLog(@"[TTG] ❌ TTGSettingsViewController 未找到"); return; }
-    id vc = [[cls alloc] init];
-    if (![vc isKindOfClass:[UIViewController class]]) return;
-
-    UIViewController *realVC = (UIViewController *)vc;
-    UIWindow *win = TTGFrontmostWindow();
-    if (!win) return;
-
-    // 创建一个容器 view，addSubview VC.view + 半透明背景
-    UIView *container = [[UIView alloc] initWithFrame:win.bounds];
-    container.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
-    container.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-
-    realVC.view.frame = CGRectMake(0, win.bounds.size.height, win.bounds.size.width, win.bounds.size.height);
-    realVC.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [container addSubview:realVC.view];
-    [win addSubview:container];
-
-    // 动画滑入
-    [UIView animateWithDuration:0.3 animations:^{
-        container.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
-        CGRect f = realVC.view.frame;
-        f.origin.y = 0;
-        realVC.view.frame = f;
-    }];
+    UIViewController *vc = [[cls alloc] init];
+    if (!vc) return;
+    vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
+    vc.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
+    [topVC presentViewController:vc animated:YES completion:nil];
 }
 
 // MARK: - UIGestureRecognizerDelegate
-// 关键修复：window 上的手势（我们自己装的）互相不 require，否则死锁
+// window 上的手势（我们自己装的）互相不 require，否则死锁
 // 只让子视图（TikTok 内部）的长按/tap require 我们失败
+// （不返回 YES 给 shouldRecognizeSimultaneously，iOS 默认互斥 → 我们到点立刻 Began）
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
 shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
     // 排除：other 也在 window 上（也是我们装的），不互相 require
     if (otherGestureRecognizer.view && [otherGestureRecognizer.view isKindOfClass:[UIWindow class]]) {
         return NO;
     }
-    // 只让子视图的长按/tap require 我们失败（我们 0.4s 先触发）
+    // 只让子视图的长按/tap require 我们失败（我们 0.4s 先触发，早于 TikTok 的 0.5s）
     // pan/swipe/pinch 一律放行，保证上下滑动正常
     if ([otherGestureRecognizer isKindOfClass:[UILongPressGestureRecognizer class]] ||
         [otherGestureRecognizer isKindOfClass:[UITapGestureRecognizer class]]) {
         return YES;
     }
     return NO;
-}
-// 允许同时识别（但长按/tap类已被上面的反向require拦住）
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
-shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    return YES;
 }
 @end
 
