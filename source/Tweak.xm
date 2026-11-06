@@ -160,25 +160,109 @@ static id TTGFindAwemeInVCRecursive(UIViewController *vc, int depth) {
     return nil;
 }
 
+// 判断一个对象是不是视频模型（aweme）
+static BOOL TTGIsAwemeModel(id v) {
+    if (!v || [v isKindOfClass:[NSNull class]]) return NO;
+    NSString *cn = NSStringFromClass([v class]);
+    if ([cn containsString:@"Aweme"]) return YES;
+    if (TTGGetValue(v, @"video") && TTGGetValue(v, @"awemeId")) return YES;
+    if (TTGGetValue(v, @"video") && TTGGetValue(v, @"desc")) return YES;
+    return NO;
+}
+
+// 从任意对象（VC / Cell / View）里挖 aweme 模型
+static id TTGAwemeFromObject(id obj) {
+    if (!obj || [obj isKindOfClass:[NSNull class]]) return nil;
+
+    for (NSString *k in TTGPropertyNamesForKeys()) {
+        id v = TTGGetValue(obj, k);
+        if (TTGIsAwemeModel(v)) return v;
+    }
+
+    Class cls = [obj class];
+    unsigned int ivarCount = 0;
+    Ivar *ivars = class_copyIvarList(cls, &ivarCount);
+    if (ivars) {
+        for (unsigned int i = 0; i < ivarCount; i++) {
+            const char *iname = ivar_getName(ivars[i]);
+            const char *itype = ivar_getTypeEncoding(ivars[i]);
+            if (!iname || !itype || itype[0] != '@') continue;
+            NSString *nsname = [NSString stringWithUTF8String:iname];
+            if (!([nsname containsString:@"model"] || [nsname containsString:@"Model"]
+                  || [nsname containsString:@"aweme"] || [nsname containsString:@"Aweme"])) continue;
+            id v = object_getIvar(obj, ivars[i]);
+            if (TTGIsAwemeModel(v)) { free(ivars); return v; }
+        }
+        free(ivars);
+    }
+    return nil;
+}
+
+// 递归遍历当前可见视图，收集所有候选模型及其可见面积
+static void TTGCollectVisibleModels(UIView *view, NSMutableArray *out,
+                                   NSMutableSet *seenVCs, int depth) {
+    if (!view || depth > 40) return;
+    if (view.hidden || view.alpha < 0.01 || view.window == nil) return;
+
+    // 1) 视图自己可能就是 Cell（cell.model）
+    id m = TTGAwemeFromObject(view);
+    if (m) {
+        CGRect f = [view convertRect:view.bounds toView:nil];
+        CGFloat area = f.size.width * f.size.height;
+        [out addObject:@{@"model": m, @"area": @(area)}];
+    }
+
+    // 2) 视图所属的 VC
+    UIResponder *r = view.nextResponder;
+    int guard = 0;
+    while (r && guard++ < 30 && ![r isKindOfClass:[UIViewController class]]) r = r.nextResponder;
+    if (r && [r isKindOfClass:[UIViewController class]] && ![seenVCs containsObject:r]) {
+        [seenVCs addObject:r];
+        id vm = TTGAwemeFromObject(r);
+        if (vm) {
+            CGRect f = [view convertRect:view.bounds toView:nil];
+            CGFloat area = f.size.width * f.size.height;
+            [out addObject:@{@"model": vm, @"area": @(area)}];
+        }
+    }
+
+    for (UIView *sub in view.subviews) {
+        TTGCollectVisibleModels(sub, out, seenVCs, depth + 1);
+    }
+}
+
+// 扫描当前真正显示在屏幕上的那个视频
+static id TTGScanVisibleAweme(void) {
+    UIWindow *win = TTGFrontmostWindow();
+    if (!win) return nil;
+    NSMutableArray *out = [NSMutableArray array];
+    NSMutableSet *seenVCs = [NSMutableSet set];
+    TTGCollectVisibleModels(win, out, seenVCs, 0);
+
+    id best = nil;
+    CGFloat bestArea = -1;
+    for (NSDictionary *d in out) {
+        CGFloat a = [d[@"area"] doubleValue];
+        if (a > bestArea) { bestArea = a; best = d[@"model"]; }
+    }
+    NSLog(@"[TTG] 🔎 可见候选 %lu 个，选中面积 %.0f，模型 %@",
+          (unsigned long)out.count, bestArea, best ? NSStringFromClass([best class]) : @"nil");
+    return best;
+}
+
 static id TTGGetCurrentAweme(void) {
-    // 1. 缓存
-    if (g_currentAweme) return g_currentAweme;
-    
-    // 2. 从 top VC 递归查
+    // 每次都重新扫描可见视图 —— 绝对不能直接返回旧缓存
+    id fresh = TTGScanVisibleAweme();
+    if (fresh) { g_currentAweme = fresh; return fresh; }
+
+    // 兜底 1：top VC 递归
     UIViewController *top = TTGTopViewController();
     if (top) {
         id found = TTGFindAwemeInVCRecursive(top, 0);
         if (found) { g_currentAweme = found; return found; }
     }
-    
-    // 3. 从 window rootVC 递归查（可能有多个 window）
-    UIWindow *win = TTGFrontmostWindow();
-    if (win && win.rootViewController) {
-        id found = TTGFindAwemeInVCRecursive(win.rootViewController, 0);
-        if (found) { g_currentAweme = found; return found; }
-    }
-    
-    // 4. 所有 window 的 rootVC
+
+    // 兜底 2：所有 window 的 rootVC 递归
     if (@available(iOS 13.0, *)) {
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
             if ([scene isKindOfClass:NSClassFromString(@"UIWindowScene")]) {
@@ -191,7 +275,7 @@ static id TTGGetCurrentAweme(void) {
             }
         }
     }
-    
+
     NSLog(@"[TTG] ❌ 找不到任何 aweme model");
     return nil;
 }
@@ -235,8 +319,8 @@ static NSString *TTGFindBestVideoURL(id aweme) {
         NSLog(@"[TTG] 📹 video props: %@", pnames);
     } @catch (NSException *e) {}
     
-    // 尝试各种 URL model 属性
-    NSArray *urlModelKeys = @[@"downloadURL", @"playURL", @"playApi", @"streamURL", @"bitRateURL"];
+    // 尝试各种 URL model 属性（playURL 优先 = 无水印，与原版 haoict 一致）
+    NSArray *urlModelKeys = @[@"playURL", @"playAddr", @"playApi", @"downloadURL", @"downloadAddr", @"streamURL", @"bitRateURL"];
     for (NSString *key in urlModelKeys) {
         id urlModel = TTGGetValue(video, key);
         if (!urlModel) continue;
@@ -284,6 +368,16 @@ static void TTGDownloadCurrent(void) {
         return;
     }
     NSLog(@"[TTG] 📥 URL: %@", urlStr);
+
+    // 去水印：playURL 有时带 watermark=1 参数，改成 0
+    if ([urlStr containsString:@"watermark=1"]) {
+        urlStr = [urlStr stringByReplacingOccurrencesOfString:@"watermark=1" withString:@"watermark=0"];
+        NSLog(@"[TTG] 📥 去水印参数后: %@", urlStr);
+    }
+    if ([urlStr containsString:@".m3u8"]) {
+        TTGShowToast(@"❌ 该视频为 m3u8 格式，暂不支持");
+        return;
+    }
     
     TTGShowToast(@"⏳ 正在下载...");
     
@@ -542,30 +636,29 @@ static void TTGRegisterHooks(void) {
             NSLog(@"[TTG] ✅ CTCarrier 切地区 已启用");
         }
         
-        // 遍历所有类找 set*Aweme* / set*Model* 方法做缓存
-        unsigned int classCount = 0;
-        Class *classes = objc_copyClassList(&classCount);
-        if (classes) {
-            SEL cacheSels[] = { @selector(setModel:), @selector(setAwemeModel:), @selector(setVideoModel:) };
-            for (unsigned int i = 0; i < classCount; i++) {
-                Class cls = classes[i];
-                for (int s = 0; s < 3; s++) {
-                    SEL sel = cacheSels[s];
-                    Method m = class_getInstanceMethod(cls, sel);
-                    if (m) {
-                        const char *types = method_getTypeEncoding(m);
-                        if (types && strlen(types) >= 3 && types[2] == '@') {
-                            IMP orig = method_getImplementation(m);
-                            IMP newImp = imp_implementationWithBlock(^(id self, id model) {
-                                if (model) { g_currentAweme = model; }
-                                return ((void(*)(id, SEL, id))orig)(self, sel, model);
-                            });
-                            method_setImplementation(m, newImp);
-                        }
-                    }
-                }
-            }
-            free(classes);
+        // 只 hook 已知的播放器/卡片类，避免污染继承方法导致永远拿到第一个模型
+        NSArray *modelClassNames = @[
+            @"AWEPlayInteractionViewController",
+            @"AWEPlayVideoViewController",
+            @"AWEFeedCellViewController",
+            @"AWEPlayVideoCell",
+            @"AWEPlayInteractionView",
+        ];
+        SEL setModelSel = @selector(setModel:);
+        for (NSString *name in modelClassNames) {
+            Class cls = NSClassFromString(name);
+            if (!cls) { NSLog(@"[TTG] ⚠️ 类不存在: %@", name); continue; }
+            Method m = class_getInstanceMethod(cls, setModelSel);
+            if (!m) { NSLog(@"[TTG] ⚠️ 无 setModel: %@", name); continue; }
+            const char *types = method_getTypeEncoding(m);
+            if (!types || types[0] != 'v' || types[1] != '@' || types[2] != ':') continue;
+            IMP orig = method_getImplementation(m);
+            IMP newImp = imp_implementationWithBlock(^(id self, id model) {
+                if (TTGIsAwemeModel(model)) g_currentAweme = model;
+                ((void(*)(id, SEL, id))orig)(self, setModelSel, model);
+            });
+            class_replaceMethod(cls, setModelSel, newImp, types);
+            NSLog(@"[TTG] ✅ %@.setModel: 已 hook", name);
         }
         NSLog(@"[TTG] ✅ setModel 缓存已注册");
         
