@@ -43,17 +43,26 @@ static void TTGDownloadMusic(void);
     _startPoint = [[touches anyObject] locationInView:self.view];
     _fired = NO;
     _cancelled = NO;
+    NSLog(@"[TTG] 👆 touchesBegan count=1");
     __weak typeof(self) wself = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(self.holdDuration * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        if (_cancelled) return;
+        if (_cancelled) { NSLog(@"[TTG] 👆 timer 触发但已取消"); return; }
         __strong typeof(wself) self = wself;
         if (!self) return;
         if (self.state == UIGestureRecognizerStatePossible) {
             self->_fired = YES;
+            NSLog(@"[TTG] ✅ 👆 timer 到点 → set state=Began");
             self.state = UIGestureRecognizerStateBegan;
         }
     });
+}
+
+// 关键：第二个手指按下时取消 timer（否则双指操作也会先 fire 单指）
+- (void)touchesAdded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    NSLog(@"[TTG] 👆 touchesAdded count=%lu → 取消单指 timer", (unsigned long)self.numberOfTouches);
+    _cancelled = YES;
+    self.state = UIGestureRecognizerStateFailed;
 }
 
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
@@ -62,6 +71,7 @@ static void TTGDownloadMusic(void);
     CGFloat dx = now.x - _startPoint.x;
     CGFloat dy = now.y - _startPoint.y;
     if (sqrtf(dx*dx + dy*dy) > self.allowableMovement) {
+        NSLog(@"[TTG] 👆 手指移动过大 → cancel (%.1f,%.1f)", dx, dy);
         _cancelled = YES;
         self.state = UIGestureRecognizerStateFailed;
     }
