@@ -10,15 +10,13 @@
 static void TTGDownloadAndSave(void);
 static void TTGDownloadImage(void);
 static void TTGDownloadMusic(void);
-static void TTGVRecurseInstall(UIViewController *vc);
+
+@class TTGSettingsViewController;
 
 @interface TTGLongPressHandler : NSObject
 + (instancetype)shared;
-- (void)handleLongPress:(UILongPressGestureRecognizer *)gr;
-@end
-
-@interface TTGLongPressInstaller : NSObject
-+ (void)swizzleViewDidAppear:(Class)cls;
+- (void)handleSingleLongPress:(UILongPressGestureRecognizer *)gr;
+- (void)handleDoubleLongPress:(UILongPressGestureRecognizer *)gr;
 @end
 
 @interface UIButton (TTGBlock)
@@ -799,29 +797,8 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
 }
 @end
 
-// 长按手势识别器：添加到 TikTok 最上层视图
-static NSMutableArray *_ttg_gestureTargets = nil;
-
-static void TTGInstallLongPressOnce(void) {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        _ttg_gestureTargets = [NSMutableArray array];
-    });
-}
-
-static void TTGInstallLongPressOnView(UIView *view) {
-    if (!view) return;
-    TTGInstallLongPressOnce();
-    // 防止重复添加
-    for (UIGestureRecognizer *g in view.gestureRecognizers) {
-        if ([g isKindOfClass:[UILongPressGestureRecognizer class]] && g.view == view) return;
-    }
-    UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:[TTGLongPressHandler shared] action:@selector(handleLongPress:)];
-    lp.minimumPressDuration = 0.6;
-    lp.allowableMovement = 30;
-    lp.cancelsTouchesInView = NO;
-    [view addGestureRecognizer:lp];
-}
+// 手势装到 window 上（最顶层，不会被内部子视图盖住）
+static NSHashTable *_ttg_windowsWithGesture = nil;
 
 @implementation TTGLongPressHandler
 + (instancetype)shared {
@@ -830,57 +807,69 @@ static void TTGInstallLongPressOnView(UIView *view) {
     dispatch_once(&once, ^{ inst = [[TTGLongPressHandler alloc] init]; });
     return inst;
 }
-- (void)handleLongPress:(UILongPressGestureRecognizer *)gr {
+// 单指长按 → 动作面板（保存视频/图片/音乐）
+- (void)handleSingleLongPress:(UILongPressGestureRecognizer *)gr {
     if (gr.state == UIGestureRecognizerStateBegan) {
+        NSLog(@"[TTG] 👆 单指长按 → 动作面板");
         TTGActionPanelView *panel = [[TTGActionPanelView alloc] init];
         [panel show];
-        NSLog(@"[TTG] 👆 长按触发面板");
     }
 }
-@end
-
-// 替代 %hook AWEFeedContainerViewController viewDidAppear:
-static void TTGInstallFeedHook(void) {
-    @try {
-        Class cls = NSClassFromString(@"AWEFeedContainerViewController");
-        if (!cls) {
-            // 类名可能变了，列出所有含 Feed 的类做兜底
-            NSLog(@"[TTG] ⚠️ AWEFeedContainerViewController 未找到，尝试搜索含 Feed 的类");
-            int count = objc_getClassList(NULL, 0);
-            Class *classes = (Class *)malloc(sizeof(Class) * count);
-            objc_getClassList(classes, count);
-            for (int i = 0; i < count; i++) {
-                NSString *name = NSStringFromClass(classes[i]);
-                if ([name containsString:@"Feed"] && [name containsString:@"ViewController"]) {
-                    NSLog(@"[TTG] 🔍 发现候选: %@", name);
-                    [TTGLongPressInstaller swizzleViewDidAppear:classes[i]];
-                }
+// 双指长按 → 设置面板（插件开关）
+- (void)handleDoubleLongPress:(UILongPressGestureRecognizer *)gr {
+    if (gr.state == UIGestureRecognizerStateBegan) {
+        NSLog(@"[TTG] ✌️ 双指长按 → 设置面板");
+        // 用 objc_msgSend 绕开前向声明限制
+        Class cls = NSClassFromString(@"TTGSettingsViewController");
+        if (!cls) { NSLog(@"[TTG] ❌ TTGSettingsViewController 未找到"); return; }
+        id vc = [[cls alloc] init];
+        if ([vc isKindOfClass:[UIViewController class]]) {
+            [(UIViewController *)vc setModalPresentationStyle:UIModalPresentationOverCurrentContext];
+            UIViewController *topVC = TTGTopVC();
+            if (topVC) {
+                [topVC presentViewController:(UIViewController *)vc animated:YES completion:nil];
             }
-            free(classes);
-            return;
         }
-        [TTGLongPressInstaller swizzleViewDidAppear:cls];
-        NSLog(@"[TTG] ✅ Feed hook 安装成功");
-    } @catch (NSException *e) {
-        NSLog(@"[TTG] feed hook err: %@", e);
     }
 }
-
-@implementation TTGLongPressInstaller
-+ (void)swizzleViewDidAppear:(Class)cls {
-    SEL sel = @selector(viewDidAppear:);
-    Method m = class_getInstanceMethod(cls, sel);
-    if (!m) return;
-    IMP origImp = method_getImplementation(m);
-    IMP newImp = imp_implementationWithBlock(^(id self, BOOL animated) {
-        ((void(*)(id, SEL, BOOL))origImp)(self, sel, animated);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            TTGInstallLongPressOnView([self valueForKey:@"view"]);
-        });
-    });
-    method_setImplementation(m, newImp);
-}
 @end
+
+static void TTGInstallGesturesOnWindow(UIWindow *win) {
+    if (!win) return;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        _ttg_windowsWithGesture = [NSHashTable weakObjectsHashTable];
+    });
+    if ([_ttg_windowsWithGesture containsObject:win]) return;
+
+    // 单指长按（0.5s）→ 动作面板
+    UILongPressGestureRecognizer *single = [[UILongPressGestureRecognizer alloc]
+        initWithTarget:[TTGLongPressHandler shared] action:@selector(handleSingleLongPress:)];
+    single.minimumPressDuration = 0.5;
+    single.numberOfTouchesRequired = 1;
+    single.allowableMovement = 20;
+    single.cancelsTouchesInView = NO;
+    single.delaysTouchesBegan = NO;
+    single.delaysTouchesEnded = NO;
+
+    // 双指长按（0.5s）→ 设置面板
+    UILongPressGestureRecognizer *dbl = [[UILongPressGestureRecognizer alloc]
+        initWithTarget:[TTGLongPressHandler shared] action:@selector(handleDoubleLongPress:)];
+    dbl.minimumPressDuration = 0.5;
+    dbl.numberOfTouchesRequired = 2;
+    dbl.allowableMovement = 30;
+    dbl.cancelsTouchesInView = NO;
+    dbl.delaysTouchesBegan = NO;
+    dbl.delaysTouchesEnded = NO;
+
+    // 让单指长按失败后双指才能触发（避免冲突）
+    [dbl requireGestureRecognizerToFail:single];
+
+    [win addGestureRecognizer:single];
+    [win addGestureRecognizer:dbl];
+    [_ttg_windowsWithGesture addObject:win];
+    NSLog(@"[TTG] ✋ 手势已装到 window: %@", win);
+}
 
 #pragma mark - 设置页（液态玻璃）
 
@@ -1178,81 +1167,30 @@ __attribute__((constructor)) static void TTGInit(void) {
     NSLog(@"[TTG] 🚀 ctor 启动");
     TTGInstallSafeHooks();
 
-    // 启动后立刻尝试一次 Feed hook（类名不飘就生效）
-    TTGInstallFeedHook();
-
-    // 持续轮询：每秒检查一次当前顶层 VC 的 view，确保装上长按手势
-    // （兜底：hook 失效/类名变了/用户从设置页返回都能自动补上）
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        static int pollCount = 0;
+    // 持续追踪 keyWindow，一旦出现就装手势（window 是最顶层，不会被内部 view 盖住）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         static dispatch_source_t timer = nil;
         static dispatch_once_t once;
         dispatch_once(&once, ^{
             timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
             dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0), NSEC_PER_SEC, (uint64_t)(0.5 * NSEC_PER_SEC));
             dispatch_source_set_event_handler(timer, ^{
-                pollCount++;
                 @try {
                     UIWindow *win = TTGFrontmostWindow();
-                    if (!win) return;
-                    UIViewController *rootVC = win.rootViewController;
-                    if (!rootVC) return;
-                    // 递归遍历所有子 VC，在 view 上装手势
-                    TTGVRecurseInstall(rootVC);
+                    if (win) {
+                        TTGInstallGesturesOnWindow(win);
+                    }
                 } @catch (NSException *e) {
                     NSLog(@"[TTG] poll err: %@", e);
                 }
             });
             dispatch_resume(timer);
-            NSLog(@"[TTG] 🔁 持续轮询已启动，每秒检查一次");
+            NSLog(@"[TTG] 🔁 持续追踪 window，每秒检查一次");
         });
-        // 启动时立刻先跑一遍
-        @try {
-            UIWindow *win = TTGFrontmostWindow();
-            if (win && win.rootViewController) {
-                TTGVRecurseInstall(win.rootViewController);
-                NSLog(@"[TTG] ✅ 首次递归尝试完成");
-            }
-        } @catch (NSException *e) {}
-    });
-}
-
-// 已装手势的 view 记录（去重，防止每秒重复装）
-static NSHashTable *_ttg_viewsWithGesture = nil;
-
-static void TTGVRecurseInstall(UIViewController *vc) {
-    if (!vc || !vc.view) return;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        _ttg_viewsWithGesture = [NSHashTable weakObjectsHashTable];
-    });
-
-    NSString *cls = NSStringFromClass([vc class]);
-
-    // 装手势的条件：
-    // 1. 类名包含常见视频容器关键词 或
-    // 2. view 有子视图且尺寸够大（>屏幕50%） —— 兜底任何能覆盖主界面的 view
-    BOOL shouldInstall = NO;
-    if ([cls containsString:@"Feed"] || [cls containsString:@"Player"] ||
-        [cls containsString:@"Video"] || [cls containsString:@"Container"] ||
-        [cls containsString:@"Aweme"] || [cls containsString:@"Home"] ||
-        [cls containsString:@"Interaction"] || [cls containsString:@"ViewController"]) {
-        shouldInstall = YES;
-    } else {
-        CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
-        if (vc.view.bounds.size.width >= screenW * 0.5 && vc.view.subviews.count >= 3) {
-            shouldInstall = YES;
+        // 立刻先跑一遍
+        UIWindow *win = TTGFrontmostWindow();
+        if (win) {
+            TTGInstallGesturesOnWindow(win);
         }
-    }
-
-    if (shouldInstall && ![_ttg_viewsWithGesture containsObject:vc.view]) {
-        TTGInstallLongPressOnView(vc.view);
-        [_ttg_viewsWithGesture addObject:vc.view];
-        NSLog(@"[TTG] ✋ 已装长按: %@ (%.0fx%.0f)", cls, vc.view.bounds.size.width, vc.view.bounds.size.height);
-    }
-
-    // 递归子 VC
-    for (UIViewController *child in vc.childViewControllers) {
-        TTGVRecurseInstall(child);
-    }
+    });
 }
