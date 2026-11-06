@@ -1177,33 +1177,81 @@ static void TTGDownloadMusic(void) {
 __attribute__((constructor)) static void TTGInit(void) {
     NSLog(@"[TTG] 🚀 ctor 启动");
     TTGInstallSafeHooks();
+
+    // 启动后立刻尝试一次 Feed hook（类名不飘就生效）
     TTGInstallFeedHook();
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // 持续轮询：每秒检查一次当前顶层 VC 的 view，确保装上长按手势
+    // （兜底：hook 失效/类名变了/用户从设置页返回都能自动补上）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        static int pollCount = 0;
+        static dispatch_source_t timer = nil;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+            dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0), NSEC_PER_SEC, (uint64_t)(0.5 * NSEC_PER_SEC));
+            dispatch_source_set_event_handler(timer, ^{
+                pollCount++;
+                @try {
+                    UIWindow *win = TTGFrontmostWindow();
+                    if (!win) return;
+                    UIViewController *rootVC = win.rootViewController;
+                    if (!rootVC) return;
+                    // 递归遍历所有子 VC，在 view 上装手势
+                    TTGVRecurseInstall(rootVC);
+                } @catch (NSException *e) {
+                    NSLog(@"[TTG] poll err: %@", e);
+                }
+            });
+            dispatch_resume(timer);
+            NSLog(@"[TTG] 🔁 持续轮询已启动，每秒检查一次");
+        });
+        // 启动时立刻先跑一遍
         @try {
             UIWindow *win = TTGFrontmostWindow();
-            if (!win) { NSLog(@"[TTG] ❌ 没找到 window"); return; }
-            UIViewController *rootVC = win.rootViewController;
-            if (!rootVC) return;
-            // 尝试递归遍历 VC 的 view 安装长按手势（兜底 Feed hook 类名漂了也能用）
-            TTGVRecurseInstall(rootVC);
-            NSLog(@"[TTG] ✅ 长按手势就绪，进入视频页面后长按 0.6s 弹出面板");
-        } @catch (NSException *e) {
-            NSLog(@"[TTG] ctor err: %@", e);
-        }
+            if (win && win.rootViewController) {
+                TTGVRecurseInstall(win.rootViewController);
+                NSLog(@"[TTG] ✅ 首次递归尝试完成");
+            }
+        } @catch (NSException *e) {}
     });
 }
 
-// 递归遍历 VC 树并尝试安装长按手势（兜底逻辑，避免类名变了 hook 失效）
+// 已装手势的 view 记录（去重，防止每秒重复装）
+static NSHashTable *_ttg_viewsWithGesture = nil;
+
 static void TTGVRecurseInstall(UIViewController *vc) {
     if (!vc || !vc.view) return;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        _ttg_viewsWithGesture = [NSHashTable weakObjectsHashTable];
+    });
+
     NSString *cls = NSStringFromClass([vc class]);
-    // 在常见的 feed 容器上安装
+
+    // 装手势的条件：
+    // 1. 类名包含常见视频容器关键词 或
+    // 2. view 有子视图且尺寸够大（>屏幕50%） —— 兜底任何能覆盖主界面的 view
+    BOOL shouldInstall = NO;
     if ([cls containsString:@"Feed"] || [cls containsString:@"Player"] ||
         [cls containsString:@"Video"] || [cls containsString:@"Container"] ||
-        [cls containsString:@"Aweme"] || [cls containsString:@"Home"]) {
-        TTGInstallLongPressOnView(vc.view);
+        [cls containsString:@"Aweme"] || [cls containsString:@"Home"] ||
+        [cls containsString:@"Interaction"] || [cls containsString:@"ViewController"]) {
+        shouldInstall = YES;
+    } else {
+        CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
+        if (vc.view.bounds.size.width >= screenW * 0.5 && vc.view.subviews.count >= 3) {
+            shouldInstall = YES;
+        }
     }
+
+    if (shouldInstall && ![_ttg_viewsWithGesture containsObject:vc.view]) {
+        TTGInstallLongPressOnView(vc.view);
+        [_ttg_viewsWithGesture addObject:vc.view];
+        NSLog(@"[TTG] ✋ 已装长按: %@ (%.0fx%.0f)", cls, vc.view.bounds.size.width, vc.view.bounds.size.height);
+    }
+
+    // 递归子 VC
     for (UIViewController *child in vc.childViewControllers) {
         TTGVRecurseInstall(child);
     }
