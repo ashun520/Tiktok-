@@ -928,9 +928,7 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
 }
 @end
 
-@implementation TTGLongPressHandler {
-    BOOL _panelShowing;
-}
+@implementation TTGLongPressHandler
 + (instancetype)shared {
     static TTGLongPressHandler *inst;
     static dispatch_once_t once;
@@ -941,31 +939,22 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
 // 单指长按 → 动作面板
 - (void)handleSingleLongPress:(UILongPressGestureRecognizer *)gr {
     if (gr.state == UIGestureRecognizerStateBegan) {
-        if (_panelShowing) { NSLog(@"[TTG] 🔒 已有面板显示中 → 忽略单指"); return; }
-        _panelShowing = YES;
         NSLog(@"[TTG] ✅ 👆 单指长按 BEGAN → 弹动作面板");
         TTGActionPanelView *panel = [[TTGActionPanelView alloc] init];
-        // 面板 dismiss 时解锁 —— 通过 NSNotification 监听？或者直接在 show 里处理
-        // 简单做法：show 后 3s 自动解锁（面板通常不会超过 3s 还开着没关）
         [panel show];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            self->_panelShowing = NO;
-        });
     }
 }
 
 // 双指长按 → 设置面板
 - (void)handleDoubleLongPress:(UILongPressGestureRecognizer *)gr {
     if (gr.state != UIGestureRecognizerStateBegan) return;
-    if (_panelShowing) { NSLog(@"[TTG] 🔒 已有面板显示中 → 忽略双指"); return; }
-    _panelShowing = YES;
     NSLog(@"[TTG] ✅ ✌️ 双指长按 BEGAN → 弹设置面板");
     UIViewController *topVC = TTGTopVC();
-    if (!topVC) { _panelShowing = NO; return; }
+    if (!topVC) return;
     Class cls = NSClassFromString(@"TTGSettingsViewController");
-    if (!cls) { _panelShowing = NO; NSLog(@"[TTG] ❌ TTGSettingsViewController 未找到"); return; }
+    if (!cls) { NSLog(@"[TTG] ❌ TTGSettingsViewController 未找到"); return; }
     UIViewController *vc = [[cls alloc] init];
-    if (!vc) { _panelShowing = NO; return; }
+    if (!vc) return;
     vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
     vc.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
     vc.view.alpha = 0;
@@ -973,10 +962,6 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
         [UIView animateWithDuration:0.2 animations:^{
             vc.view.alpha = 1;
         }];
-        // 设置面板关闭时解锁
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            self->_panelShowing = NO;
-        });
     }];
 }
 
