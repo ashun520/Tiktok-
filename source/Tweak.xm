@@ -15,6 +15,7 @@
 #include "icons.h"
 #import <AVKit/AVKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import <objc/message.h>
 
 #pragma mark - Global state (ALL ON by default)
 
@@ -212,57 +213,130 @@ static void TTGEnableBackgroundPlay(void) {
     [[AVAudioSession sharedInstance] setActive:YES error:&err];
 }
 
-#pragma mark - Settings Panel
+#pragma mark - Settings Panel (robust, iOS 13+ safe)
+
+// Globals for window creation retry
+static UIWindow *g_settingsWindow = nil;
+static BOOL g_windowCreated = NO;
+
+/// Find an active foreground UIWindowScene (iOS 13+)
+static id TTGFindActiveWindowScene(void) {
+    if (@available(iOS 13.0, *)) {
+        Class WSCls = NSClassFromString(@"UIWindowScene");
+        if (!WSCls) return nil;
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:WSCls] && scene.activationState == UISceneActivationStateForegroundActive) {
+                return scene;
+            }
+        }
+        // Fallback: any UIWindowScene
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:WSCls]) return scene;
+        }
+    }
+    return nil;
+}
+
+/// Get a visible keyWindow the old way (pre-iOS 13 or scenes missing)
+static UIWindow *TTGGetOldKeyWindow(void) {
+    return [UIApplication sharedApplication].keyWindow;
+}
 
 @interface TTGSettingsButton : UIButton
+@property (nonatomic, assign) BOOL dragging;
 @end
 
 @implementation TTGSettingsButton
 - (instancetype)initWithFrame:(CGRect)frame {
     if ((self = [super initWithFrame:frame])) {
-        self.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.35];
+        // BIG, bright, impossible-to-miss
+        self.backgroundColor = [UIColor colorWithRed:1.0 green:0.2 blue:0.2 alpha:0.9]; // semi-transparent red
         self.layer.cornerRadius = frame.size.width / 2.0;
-        self.layer.borderWidth = 1;
+        self.layer.borderWidth = 2;
         self.layer.borderColor = [UIColor whiteColor].CGColor;
-        self.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
+        self.titleLabel.font = [UIFont boldSystemFontOfSize:frame.size.width * 0.55];
         [self setTitle:@"G" forState:UIControlStateNormal];
         [self setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        self.alpha = 0.55;
-        self.accessibilityLabel = @"TikTok God settings";
+        self.accessibilityLabel = @"TikTok God";
+        self.accessibilityHint = @"点击或长按打开 TikTok God 设置";
 
         UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(longPressed:)];
-        lp.minimumPressDuration = 0.6;
+        lp.minimumPressDuration = 0.4;
         [self addGestureRecognizer:lp];
-
-        // Also allow tap
         [self addTarget:self action:@selector(tapped) forControlEvents:UIControlEventTouchUpInside];
+
+        // Draggable — pan overwrites tap if moved far enough
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dragging:)];
+        [self addGestureRecognizer:pan];
     }
     return self;
 }
 
-- (void)tapped { [self showPanel]; }
+- (void)tapped {
+    if (self.dragging) { self.dragging = NO; return; }
+    [self showPanel];
+}
+
 - (void)longPressed:(UILongPressGestureRecognizer *)g {
     if (g.state == UIGestureRecognizerStateBegan) [self showPanel];
 }
 
+- (void)dragging:(UIPanGestureRecognizer *)g {
+    UIView *parent = self.superview;
+    if (!parent) return;
+    CGPoint p = [g translationInView:parent];
+    CGPoint c = self.center;
+    CGPoint newCenter = CGPointMake(c.x + p.x, c.y + p.y);
+
+    // Bound to parent
+    CGFloat halfW = self.bounds.size.width / 2.0;
+    CGFloat halfH = self.bounds.size.height / 2.0;
+    newCenter.x = MAX(halfW + 4, MIN(parent.bounds.size.width - halfW - 4, newCenter.x));
+    newCenter.y = MAX(halfH + 50, MIN(parent.bounds.size.height - halfH - 100, newCenter.y));
+
+    self.center = newCenter;
+    [g setTranslation:CGPointZero inView:parent];
+
+    if (g.state == UIGestureRecognizerStateChanged && (fabs(p.x) > 3 || fabs(p.y) > 3)) {
+        self.dragging = YES;
+    }
+    if (g.state == UIGestureRecognizerStateEnded) {
+        // Snap to nearest horizontal edge
+        CGFloat bx = self.center.x, screenW = parent.bounds.size.width;
+        CGFloat snapX = bx < screenW / 2 ? halfW + 14 : screenW - halfW - 14;
+        [UIView animateWithDuration:0.25 animations:^{
+            self.center = CGPointMake(snapX, self.center.y);
+        }];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            self.dragging = NO;
+        });
+    }
+}
+
 - (void)showPanel {
     UIViewController *vc = TTGTopViewController();
-    if (!vc) return;
+    if (!vc) {
+        // Retry after short delay — topVC not ready yet
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self showPanel];
+        });
+        return;
+    }
 
     UIAlertController *panel = [UIAlertController alertControllerWithTitle:@"TikTok God"
-                                                                   message:@"长按或点击任意开关切换。重启 TikTok 生效。"
+                                                                   message:@"点击 ✅/⬜️ 切换开关"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
 
     void (^addToggle)(NSString *, BOOL *, BOOL) = ^(NSString *title, BOOL *flag, BOOL restart) {
         NSString *prefix = *flag ? @"✅ " : @"⬜️ ";
-        UIAlertAction *a = [UIAlertAction actionWithTitle:[prefix stringByAppendingString:title]
+        NSString *fullTitle = [[prefix stringByAppendingString:title] stringByAppendingString:restart ? @" (重启 TikTok)" : @""];
+        UIAlertAction *a = [UIAlertAction actionWithTitle:fullTitle
                                                      style:UIAlertActionStyleDefault
                                                    handler:^(UIAlertAction * _Nonnull action) {
             *flag = !*flag;
             TTGSavePrefs();
-            // Re-show updated panel
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [self showPanel];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self showPanel]; // refresh
             });
         }];
         [panel addAction:a];
@@ -273,7 +347,7 @@ static void TTGEnableBackgroundPlay(void) {
     addToggle(@"自动连播下一个", &autoPlayNextVideo, NO);
     addToggle(@"强制进度条可拖动", &showProgressBar, NO);
     addToggle(@"一键隐藏 UI", &canHideUI, NO);
-    addToggle(@"切换地区 (默认 US)", &changeRegion, YES);
+    addToggle(@"切换地区 (US)", &changeRegion, YES);
     addToggle(@"画中画 PiP", &enablePIP, NO);
     addToggle(@"后台继续播放", &enableBackgroundPlay, NO);
     addToggle(@"绕过安全检测", &enableBypass, YES);
@@ -284,44 +358,63 @@ static void TTGEnableBackgroundPlay(void) {
 }
 @end
 
-/// Transparent window that hosts the settings floating button
-@interface TTGSettingsWindow : UIWindow
-@property (nonatomic, strong) TTGSettingsButton *button;
-@end
-
-@implementation TTGSettingsWindow
-- (instancetype)initWithFrame:(CGRect)frame {
-    if ((self = [super initWithFrame:frame])) {
-        self.windowLevel = UIWindowLevelNormal + 1;
-        self.backgroundColor = [UIColor clearColor];
-        self.opaque = NO;
-        self.userInteractionEnabled = YES;
-        self.hidden = NO;
-
-        CGFloat size = 24;
-        self.button = [[TTGSettingsButton alloc] initWithFrame:CGRectMake(12, 130, size, size)];
-        [self addSubview:self.button];
-
-        // Draggable
-        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dragging:)];
-        [self.button addGestureRecognizer:pan];
+/// Create the floating settings window — called multiple times until scene is ready
+static void TTGTryCreateSettingsWindow(int attempt) {
+    if (g_windowCreated) return;
+    if (attempt > 30) { // give up after ~7.5 seconds
+        NSLog(@"[TTG] ⚠️ Gave up creating settings window after %d retries", attempt);
+        return;
     }
-    return self;
-}
 
-- (void)dragging:(UIPanGestureRecognizer *)g {
-    CGPoint p = [g translationInView:self];
-    CGPoint c = self.button.center;
-    self.button.center = CGPointMake(c.x + p.x, c.y + p.y);
-    [g setTranslation:CGPointZero inView:self];
-    // Snap to nearest edge on release
-    if (g.state == UIGestureRecognizerStateEnded) {
-        CGFloat bx = self.button.center.x, screenW = self.bounds.size.width;
-        CGFloat newX = bx < screenW / 2 ? 24 : screenW - 24;
-        [UIView animateWithDuration:0.2 animations:^{ self.button.center = CGPointMake(newX, self.button.center.y); }];
+    // Path A: iOS 13+ UIWindowScene (the correct way)
+    if (@available(iOS 13.0, *)) {
+        id scene = TTGFindActiveWindowScene();
+        if (scene) {
+            CGRect bounds = [(id)scene coordinateSpace].bounds;
+
+            // Use objc_msgSend to avoid ARC retain warning on init performSelector
+            UIWindow *(*initWithScene)(id, SEL, id) = (UIWindow *(*)(id, SEL, id))objc_msgSend;
+            UIWindow *w = initWithScene([UIWindow alloc], @selector(initWithWindowScene:), scene);
+            w.frame = bounds;
+            w.windowLevel = UIWindowLevelNormal + 1;
+            w.backgroundColor = [UIColor clearColor];
+            w.opaque = NO;
+            w.hidden = NO;
+
+            TTGSettingsButton *btn = [[TTGSettingsButton alloc] initWithFrame:CGRectMake(14, 140, 40, 40)];
+            [w addSubview:btn];
+            [w makeKeyAndVisible];
+
+            g_settingsWindow = w;
+            g_windowCreated = YES;
+            NSLog(@"[TTG] Created floating button on attempt %d (scene=%@)", attempt, scene);
+            return;
+        }
     }
+
+    // Path B: pre-iOS 13 OR iOS 13+ but no scene yet — try hooking to existing keyWindow
+    UIWindow *keyWin = TTGGetOldKeyWindow();
+    if (keyWin && !g_windowCreated) {
+        // Check if it's already got our button
+        BOOL already = NO;
+        for (UIView *v in keyWin.subviews) {
+            if ([v isKindOfClass:[TTGSettingsButton class]]) { already = YES; break; }
+        }
+        if (!already) {
+            TTGSettingsButton *btn = [[TTGSettingsButton alloc] initWithFrame:CGRectMake(14, 140, 40, 40)];
+            [keyWin addSubview:btn];
+            g_windowCreated = YES;
+            NSLog(@"[TTG] Attached button to existing keyWindow on attempt %d", attempt);
+            return;
+        }
+    }
+
+    // Path C: still no scene/keyWindow — retry with delay
+    NSTimeInterval delay = 0.25; // 250ms per attempt
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        TTGTryCreateSettingsWindow(attempt + 1);
+    });
 }
-@end
 
 #pragma mark - Hooks
 
@@ -606,9 +699,24 @@ static AWEFeedContainerViewController *__weak __ttg_shared;
 %end
 %end // group CoreLogic
 
-#pragma mark - Ctor
+#pragma mark - Ctor + App Launch Hook
+
+/// Hook UIApplication -applicationDidFinishLaunching: as 2nd guarantee window gets created
+%group AppLifecycle
+%hook UIApplication
+- (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    %orig;
+    NSLog(@"[TTG] applicationDidFinishLaunching fired — dylib definitely loaded!");
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        TTGTryCreateSettingsWindow(0);
+    });
+}
+%end
+%end // group AppLifecycle
 
 %ctor {
+    NSLog(@"[TTG] constructor fired — dylib loaded by dyld");
+
     // Observe pref changes so toggles take effect live
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
                                     (CFNotificationCallback)reloadPrefs,
@@ -619,24 +727,14 @@ static AWEFeedContainerViewController *__weak __ttg_shared;
     // Maintain audio session for background play when enabled
     if (enableBackgroundPlay) TTGEnableBackgroundPlay();
 
-    // Create floating settings window (top-left dot, draggable)
+    // Try creating immediately — scene may not exist yet, retry loop handles it
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (@available(iOS 13.0, *)) {
-            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                if ([scene isKindOfClass:[UIWindowScene class]]) {
-                    TTGSettingsWindow *w = [[TTGSettingsWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
-                    [w makeKeyAndVisible];
-                    break;
-                }
-            }
-        } else {
-            CGRect scr = [UIScreen mainScreen].bounds;
-            TTGSettingsWindow *w = [[TTGSettingsWindow alloc] initWithFrame:scr];
-            w.windowLevel = UIWindowLevelNormal + 1;
-            [w makeKeyAndVisible];
-        }
+        NSLog(@"[TTG] Starting window creation retry loop...");
+        TTGTryCreateSettingsWindow(0);
     });
 
     %init(SecurityBypass);
     %init(CoreLogic);
+    %init(AppLifecycle);
+    NSLog(@"[TTG] All hooks registered");
 }
