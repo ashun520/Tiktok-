@@ -118,6 +118,12 @@ static NSInteger _ttg_global_touch_count = 0;
     UIView *hitView = touch.view;
     UIView *v = hitView;
     while (v) {
+        // 评论列表 / 搜索列表 —— 过滤！这些是 UITableView/UICollectionView
+        if ([v isKindOfClass:[UITableView class]] ||
+            [v isKindOfClass:[UICollectionView class]]) {
+            NSLog(@"[TTG] 👆 忽略 — 触摸在 UITableView/UICollectionView(评论/搜索列表)");
+            return NO;
+        }
         if ([v isKindOfClass:[UIButton class]]) {
             NSLog(@"[TTG] 👆 忽略 — 触摸在 UIButton");
             return NO;
@@ -132,14 +138,13 @@ static NSInteger _ttg_global_touch_count = 0;
         }
         v = v.superview;
     }
-    // 额外：如果有任何 present 出来的 VC 覆盖（评论 sheet、搜索页等）→ 不触发
+    // 如果有 present 的 VC 覆盖（评论 sheet、搜索页等）→ 不触发
     UIViewController *rootVC = self.view.window.rootViewController;
     if (rootVC.presentedViewController) {
-        // 但我们自己的 TTGSettingsViewController 和 TTGActionPanelView 例外
         Class settingsCls = NSClassFromString(@"TTGSettingsViewController");
         BOOL isOurs = [rootVC.presentedViewController isKindOfClass:settingsCls];
         if (!isOurs) {
-            NSLog(@"[TTG] 👆 忽略 — 有 present 的 VC 覆盖: %@", NSStringFromClass([rootVC.presentedViewController class]));
+            NSLog(@"[TTG] 👆 忽略 — 有 present VC 覆盖: %@", NSStringFromClass([rootVC.presentedViewController class]));
             return NO;
         }
     }
@@ -1321,15 +1326,17 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     if (!hasSingle) {
         TTGSinglePressRecognizer *single = [[TTGSinglePressRecognizer alloc]
             initWithTarget:[TTGLongPressHandler shared] action:@selector(handleSingleLongPress:)];
-        single.delegate = single;  // 自己当自己的 delegate → shouldReceiveTouch 过滤非视频区域
+        single.delegate = single;  // shouldReceiveTouch 过滤非视频区域
         single.minimumPressDuration = 999.0;  // 让 super 的 timer 永不触发，我们有自研的
         single.numberOfTouchesRequired = 1;
         single.allowableMovement = 25;
-        single.cancelsTouchesInView = YES;
+        // 关键：NO = 不吞触摸事件！否则底下的 switch/slider/按钮全点不动
+        // 我们自研 timer，到点才 Began，不需要 cancel 别人的触摸
+        single.cancelsTouchesInView = NO;
         single.delaysTouchesBegan = NO;
         single.delaysTouchesEnded = NO;
         [win addGestureRecognizer:single];
-        NSLog(@"[TTG] ✋ 单指长按手势已装到 window (delegate=self 过滤评论区)");
+        NSLog(@"[TTG] ✋ 单指长按手势已装到 window (cancelsTouchesInView=NO 不吞触摸)");
     }
 
     if (!hasDouble) {
