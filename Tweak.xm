@@ -710,13 +710,13 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
 
     // 顶部标题
     UILabel *title = [[UILabel alloc] init];
-    title.text = @"🎬 Tiktok God";
+    title.text = @"那年夏天";
     title.font = [UIFont boldSystemFontOfSize:18];
     title.textColor = [UIColor colorWithWhite:0 alpha:0.9];
     [_sheet addSubview:title];
 
     UILabel *sub = [[UILabel alloc] init];
-    sub.text = @"长按视频界面唤起 · ashun520";
+    sub.text = @"";  // 已删除副标题
     sub.font = [UIFont systemFontOfSize:11];
     sub.textColor = [UIColor colorWithWhite:0 alpha:0.45];
     [_sheet addSubview:sub];
@@ -736,11 +736,11 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
     [_sheet addSubview:btnContainer];
 
     // 构建按钮
-    // 3 行 × 2 列：保存视频、保存图片、保存音乐、保存实况、设置面板、（空位）
+    // 3 行 × 2 列：保存视频、保存图片、保存音频、保存实况、设置面板、（空位）
     NSArray *actionBtns = @[
         @{@"icon": @"arrow.down.circle.fill", @"title": @"保存视频", @"action": ^{ TTGDownloadAndSave(); }},
         @{@"icon": @"photo.on.rectangle", @"title": @"保存图片", @"action": ^{ TTGDownloadImage(); }},
-        @{@"icon": @"music.note", @"title": @"保存音乐", @"action": ^{ TTGDownloadMusic(); }},
+        @{@"icon": @"music.note", @"title": @"保存音频", @"action": ^{ TTGDownloadMusic(); }},
         @{@"icon": @"livephoto", @"title": @"保存实况", @"action": ^{ TTGDownloadLivePhoto(); }},
         @{@"icon": @"gearshape.fill", @"title": @"设置面板", @"action": ^{ [self openSettings]; }},
     ];
@@ -764,7 +764,7 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
 
     // 底部署名
     UILabel *footer = [[UILabel alloc] init];
-    footer.text = @"by ashun520 · LCSign 注入版 · 长按视频唤起";
+    footer.text = @"by ashun520 · 长按视频唤起";
     footer.font = [UIFont systemFontOfSize:10.5];
     footer.textColor = [UIColor colorWithWhite:0 alpha:0.3];
     footer.textAlignment = NSTextAlignmentCenter;
@@ -1507,16 +1507,16 @@ static void TTGDownloadMusic(void) {
         if (!aweme) { TTGShowToast(@"❌ 没找到当前内容"); return; }
 
         NSString *urlStr = TTGExtractMusicURL(aweme);
-        if (!urlStr) { TTGShowToast(@"❌ 这首没音乐可保存"); return; }
+        if (!urlStr) { TTGShowToast(@"❌ 这首没音频可存"); return; }
 
         NSString *musicName = TTGExtractMusicName(aweme);
-        NSLog(@"[TTG] 🎵 音乐名: %@ URL: %@", musicName, urlStr);
+        NSLog(@"[TTG] 🎵 音频名: %@ URL: %@", musicName, urlStr);
 
-        TTGShowToast(@"⏳ 正在下载音乐...");
+        TTGShowToast(@"⏳ 正在提取音频...");
 
-        // 保存到 tmp 然后复制到 Documents（Files App 可访问）
-        NSString *docDir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-        NSString *outPath = [docDir stringByAppendingPathComponent:
+        // 下载到 tmp（用 .mp3 扩展名，分享菜单能识别）
+        NSString *tmpDir = NSTemporaryDirectory();
+        NSString *outPath = [tmpDir stringByAppendingPathComponent:
             [NSString stringWithFormat:@"%@_%.0f.mp3", musicName, [[NSDate date] timeIntervalSince1970]]];
         NSURL *outURL = [NSURL fileURLWithPath:outPath];
         [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
@@ -1531,27 +1531,51 @@ static void TTGDownloadMusic(void) {
             completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     if (error || !location) {
-                        TTGShowToast(@"❌ 下载音乐失败");
+                        TTGShowToast(@"❌ 下载音频失败");
                         return;
                     }
                     NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
                     if (http.statusCode >= 400) {
-                        TTGShowToast(@"❌ 音乐链接失效");
+                        TTGShowToast(@"❌ 音频链接失效");
                         return;
                     }
-                    [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
                     NSError *copyErr = nil;
-                    if ([[NSFileManager defaultManager] copyItemAtURL:location toURL:outURL error:&copyErr]) {
-                        NSLog(@"[TTG] 🎵 ✅ 已保存到 %@", outPath);
-                        TTGShowToast([NSString stringWithFormat:@"✅ 音乐已存「文件」- %@", musicName]);
-                    } else {
-                        TTGShowToast(@"❌ 保存到文件失败");
+                    if (![[NSFileManager defaultManager] copyItemAtURL:location toURL:outURL error:&copyErr]) {
+                        TTGShowToast(@"❌ 写入临时文件失败");
+                        return;
                     }
+                    NSLog(@"[TTG] 🎵 ✅ 音频已下载 → present 分享菜单");
+                    TTGShowToast(@"✅ 提取成功，选择存储方式");
+
+                    // 弹出系统分享菜单（UIActivityViewController）
+                    UIViewController *topVC = TTGTopVC();
+                    if (!topVC) { TTGShowToast(@"❌ 没找到顶层界面"); return; }
+
+                    UIActivityViewController *avc = [[UIActivityViewController alloc]
+                        initWithActivityItems:@[outURL] applicationActivities:nil];
+                    avc.completionWithItemsHandler = ^(UIActivityType activityType, BOOL completed,
+                        NSArray *returnedItems, NSError *activityError) {
+                        if (completed) {
+                            NSLog(@"[TTG] 🎵 ✅ 用户完成分享: %@", activityType);
+                            TTGShowToast(@"✅ 已保存");
+                        }
+                        // 清理临时文件
+                        [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
+                    };
+
+                    // iPad 需要 sourceView/sourceRect
+                    if (avc.popoverPresentationController) {
+                        avc.popoverPresentationController.sourceView = topVC.view;
+                        avc.popoverPresentationController.sourceRect = CGRectMake(topVC.view.bounds.size.width/2 - 100, topVC.view.bounds.size.height - 200, 200, 100);
+                        avc.popoverPresentationController.permittedArrowDirections = 0;
+                    }
+
+                    [topVC presentViewController:avc animated:YES completion:nil];
                 });
             }];
         [task resume];
     } @catch (NSException *e) {
-        NSLog(@"[TTG] save music err: %@", e);
+        NSLog(@"[TTG] save audio err: %@", e);
         TTGShowToast(@"❌ 保存出错");
     }
 }
