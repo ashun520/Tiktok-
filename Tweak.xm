@@ -1378,17 +1378,15 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
         _panelShowing = YES;
         NSLog(@"[TTG] ✅ ✌️ 双指长按 BEGAN → 弹设置面板");
 
-        // 1. 彻底 remove 我们的手势（物理从 window 上卸掉）
-        TTGSetWindowLongPressEnabled(NO);
-
         UIViewController *topVC = TTGTopVC();
-        if (!topVC) { _panelShowing = NO; TTGSetWindowLongPressEnabled(YES); return; }
+        if (!topVC) { _panelShowing = NO; return; }
         Class cls = NSClassFromString(@"TTGSettingsViewController");
-        if (!cls) { _panelShowing = NO; TTGSetWindowLongPressEnabled(YES); return; }
+        if (!cls) { _panelShowing = NO; return; }
         UIViewController *vc = [[cls alloc] init];
-        if (!vc) { _panelShowing = NO; TTGSetWindowLongPressEnabled(YES); return; }
+        if (!vc) { _panelShowing = NO; return; }
 
-        // presentViewController — TableView 能正常渲染
+        // 恢复 v36 的 present 方式：不做任何手势 disable/remove
+        // OverFullScreen present 应该自动把触摸路由到 presented view
         vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
         vc.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
         vc.view.alpha = 0;
@@ -1909,7 +1907,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 
 #pragma mark - 设置页（液态玻璃）
 
-@interface TTGSettingsViewController : UIViewController <UITableViewDataSource, UITableViewDelegate, UIGestureRecognizerDelegate>
+@interface TTGSettingsViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
 @end
 
 @implementation TTGSettingsViewController {
@@ -2024,13 +2022,8 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     footer.tag = 104;
     [_card addSubview:footer];
 
-    // 点遮罩关闭
-    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dismissSelf)];
-    tap.cancelsTouchesInView = NO;
-    tap.delaysTouchesBegan = NO;
-    tap.delaysTouchesEnded = NO;
-    tap.delegate = self;
-    [_dimmingView addGestureRecognizer:tap];
+    // 点遮罩关闭 — 已删除 tap 手势！任何 tap 手势都可能干扰 card 内的 switch 触摸
+    // 用户用右上角 ✕ 关闭即可
 }
 
 - (void)viewDidLayoutSubviews {
@@ -2097,23 +2090,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (void)dismissSelf {
-    NSLog(@"[TTG] 🚪 dismissSelf → present dismiss + 恢复手势");
-    [self dismissViewControllerAnimated:YES completion:^{
-        TTGSetWindowLongPressEnabled(YES);
-        NSLog(@"[TTG] ✅ 设置面板关闭 → 手势已恢复");
-    }];
-}
-
-// UIGestureRecognizerDelegate — 点在 card 区域时不触发 dimmingView 的 tap
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
-    // 禁止 dimmingView 的 tap 手势接收 card 内部的触摸！
-    // 防止它延迟/吞掉 switch 等控件的触摸事件
-    CGPoint pt = [touch locationInView:self.view];
-    if (CGRectContainsPoint(_card.frame, pt)) {
-        NSLog(@"[TTG] 🛡️ tap在card上 → 拒绝dimmingView手势（保护switch触摸）");
-        return NO;
-    }
-    return YES;
+    [self dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)toggleAllOn {
@@ -2229,13 +2206,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     // 关键：强持有 nav！否则 ARC 立即释放 nav 和 vc → switch 的 target 变野指针
     _detailNav = nav;
 
-    // 关键：彻底 disable window 上的长按手势！
-    // 即使 shouldReceiveTouch 返回 NO，iOS 手势系统仍会干扰触摸路由 → switch/slider 点不动
-    // 直接 set enabled=NO → 手势完全不工作 → 触摸 100% 传递给详情页控件
-    TTGSetWindowLongPressEnabled(NO);
-
-    // 关键：不走 present！直接把 nav.view 加到 window 上
-    // 彻底绕过 iOS 嵌套 present 的触摸事件问题
+    // 不走 present！直接把 nav.view 加到 window 上
     UIWindow *win = nil;
     if (@available(iOS 13.0, *)) {
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
@@ -2250,7 +2221,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 
     nav.view.frame = win.bounds;
     nav.view.alpha = 0;
-    nav.view.tag = 9999;  // 标记一下，关闭时找这个
+    nav.view.tag = 9999;
     [win addSubview:nav.view];
 
     [UIView animateWithDuration:0.25 animations:^{ nav.view.alpha = 1; }];
@@ -2258,10 +2229,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (void)removeNavFromWindow {
-    // 关闭详情页 → 恢复 window 上的长按手势
-    TTGSetWindowLongPressEnabled(YES);
-
-    // 找到所有 window 里 tag=9999 的 view（就是我们加的 nav.view），移除
+    // 找到所有 window 里 tag=9999 的 view，移除
     NSArray *allWindows = nil;
     if (@available(iOS 13.0, *)) {
         NSMutableArray *ws = [NSMutableArray array];
@@ -2279,13 +2247,11 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         if (v) {
             [UIView animateWithDuration:0.2 animations:^{ v.alpha = 0; } completion:^(BOOL done) {
                 [v removeFromSuperview];
-                // 关闭后清空强引用，让 nav/vc 正常释放
                 self->_detailNav = nil;
             }];
             return;
         }
     }
-    // 如果没找到（可能已被移除），也要清空引用
     self->_detailNav = nil;
 }
 
