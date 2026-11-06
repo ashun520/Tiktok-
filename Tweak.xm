@@ -15,6 +15,8 @@ static void TTGDownloadLivePhoto(void);
 
 @class TTGSettingsViewController;
 
+static void TTGInstallGesturesOnWindow(UIWindow *win);
+
 // 递归禁用整个 view 树里除了保留的 window 上的手势之外的所有 UILongPressGestureRecognizer
 // Kill 子视图长按手势，但跳过评论/搜索/输入区域
 static BOOL TTGIsProtectedView(UIView *v) {
@@ -566,33 +568,77 @@ static UIWindow *TTGFrontmostWindow(void) {
     return nil;
 }
 
-// 全局标志：我们自己的面板打开期间 → 定时器不能把手势 enable 回去
+// 全局标志：我们自己的面板打开期间 → 定时器不能把手势装回去
 static BOOL _ttg_gesturesSuspended = NO;
+// 暂存被移除的手势（present 面板时 remove，dismiss 时加回去）
+static NSMutableArray *_ttg_saved_gestures = nil;
+static NSMutableArray *_ttg_saved_gesture_windows = nil;
 
-// 详情页显示时 disable window 上的长按手势 → 彻底释放触摸给 switch/slider
+// present 面板前 → 把手势从 window 上彻底 removeFromSuperview（不是只设 enabled=NO）
+// dismiss 面板后 → 再加回 window
+// 彻底绕开 iOS 手势系统对 window 触摸路由的干扰
 static void TTGSetWindowLongPressEnabled(BOOL enabled) {
-    _ttg_gesturesSuspended = !enabled;   // ← 关键！告诉定时器不要反着来
-    NSArray *allWindows = nil;
-    if (@available(iOS 13.0, *)) {
-        NSMutableArray *ws = [NSMutableArray array];
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:NSClassFromString(@"UIWindowScene")]) {
-                [ws addObjectsFromArray:[(id)scene windows]];
+    _ttg_gesturesSuspended = !enabled;
+
+    if (!enabled) {
+        // ====== DISABLE: 从所有 window 上彻底移除我们的长按手势 ======
+        NSLog(@"[TTG] ✋✋✋ TTGSetWindowLongPressEnabled(NO) → 彻底 removeFromSuperview 所有长按手势");
+        if (!_ttg_saved_gestures) _ttg_saved_gestures = [NSMutableArray array];
+        if (!_ttg_saved_gesture_windows) _ttg_saved_gesture_windows = [NSMutableArray array];
+        [_ttg_saved_gestures removeAllObjects];
+        [_ttg_saved_gesture_windows removeAllObjects];
+
+        NSArray *allWindows = nil;
+        if (@available(iOS 13.0, *)) {
+            NSMutableArray *ws = [NSMutableArray array];
+            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if ([scene isKindOfClass:NSClassFromString(@"UIWindowScene")]) {
+                    [ws addObjectsFromArray:[(id)scene windows]];
+                }
+            }
+            allWindows = ws;
+        } else {
+            allWindows = [UIApplication sharedApplication].windows;
+        }
+        for (UIWindow *win in allWindows) {
+            // copy gestures 数组避免遍历中修改
+            NSArray *grs = [win.gestureRecognizers copy];
+            for (UIGestureRecognizer *gr in grs) {
+                BOOL isOurSingle = [gr isKindOfClass:NSClassFromString(@"TTGSinglePressRecognizer")];
+                BOOL isOurDouble = [gr isKindOfClass:[UILongPressGestureRecognizer class]] &&
+                                   ![gr isKindOfClass:NSClassFromString(@"TTGSinglePressRecognizer")] &&
+                                   ((UILongPressGestureRecognizer *)gr).numberOfTouchesRequired == 2;
+                if (isOurSingle || isOurDouble) {
+                    NSLog(@"[TTG] ✋ removeFromSuperview %@ (window=%@)", NSStringFromClass([gr class]), win);
+                    [_ttg_saved_gestures addObject:gr];
+                    [_ttg_saved_gesture_windows addObject:win];
+                    [win removeGestureRecognizer:gr];
+                }
             }
         }
-        allWindows = ws;
+        NSLog(@"[TTG] ✋ 已移除 %lu 个手势，suspended=%d", (unsigned long)_ttg_saved_gestures.count, _ttg_gesturesSuspended);
     } else {
-        allWindows = [UIApplication sharedApplication].windows;
-    }
-    for (UIWindow *win in allWindows) {
-        for (UIGestureRecognizer *gr in win.gestureRecognizers) {
-            if ([gr isKindOfClass:[UILongPressGestureRecognizer class]] ||
-                [gr isKindOfClass:NSClassFromString(@"TTGSinglePressRecognizer")]) {
-                gr.enabled = enabled;
-                NSLog(@"[TTG] ✋ 手势 %@ → enabled=%d (suspended=%d)",
-                      NSStringFromClass([gr class]), enabled, _ttg_gesturesSuspended);
+        // ====== ENABLE: 把暂存的手势加回 window ======
+        NSLog(@"[TTG] ✋✋✋ TTGSetWindowLongPressEnabled(YES) → 把手势加回 window");
+        if (_ttg_saved_gestures && _ttg_saved_gestures.count > 0) {
+            for (int i = 0; i < (int)_ttg_saved_gestures.count; i++) {
+                UIGestureRecognizer *gr = _ttg_saved_gestures[i];
+                UIWindow *win = _ttg_saved_gesture_windows[i];
+                if (win && gr) {
+                    NSLog(@"[TTG] ✋ addGestureRecognizer %@ → window", NSStringFromClass([gr class]));
+                    [win addGestureRecognizer:gr];
+                }
             }
+            [_ttg_saved_gestures removeAllObjects];
+            [_ttg_saved_gesture_windows removeAllObjects];
+        } else {
+            NSLog(@"[TTG] ✋ 没暂存手势 → 让定时器重新装");
         }
+        // 让定时器立即跑一遍装好手势
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIWindow *win = TTGFrontmostWindow();
+            if (win) TTGInstallGesturesOnWindow(win);
+        });
     }
 }
 
@@ -1349,6 +1395,18 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
         [topVC presentViewController:vc animated:NO completion:^{
             [UIView animateWithDuration:0.2 animations:^{
                 vc.view.alpha = 1;
+            } completion:^(BOOL _) {
+                // 确认 window 上真的没有我们的手势了
+                UIWindow *fw = TTGFrontmostWindow();
+                int remain = 0;
+                for (UIGestureRecognizer *g in fw.gestureRecognizers) {
+                    if ([g isKindOfClass:[TTGSinglePressRecognizer class]]) remain++;
+                    if ([g isKindOfClass:[UILongPressGestureRecognizer class]] &&
+                        ![g isKindOfClass:[TTGSinglePressRecognizer class]] &&
+                        ((UILongPressGestureRecognizer *)g).numberOfTouchesRequired == 2) remain++;
+                }
+                NSLog(@"[TTG] ✅ present 完成 → window 上剩余手势数=%d（应为0）", remain);
+                NSLog(@"[TTG] 🎯 TTGSettingsViewController 已 present，switch 应该能点了！");
             }];
         }];
     }
@@ -1375,7 +1433,6 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 
     if (hasSingle && hasDouble) {
         // 两个都在 → 尊重全局 suspended 标志，不要强制 enable！
-        // v46 bug: 这里无条件 gr.enabled = YES 导致 TTGSetWindowLongPressEnabled(NO) 0.3s 后被翻盘！
         if (!_ttg_gesturesSuspended) {
             for (UIGestureRecognizer *gr in win.gestureRecognizers) {
                 if ([gr isKindOfClass:[TTGSinglePressRecognizer class]]) gr.enabled = YES;
@@ -1384,7 +1441,12 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
                     ((UILongPressGestureRecognizer *)gr).numberOfTouchesRequired == 2) gr.enabled = YES;
             }
         }
-        // 如果 suspended → 什么都不做，让手势保持 disabled 状态
+        return;
+    }
+
+    // ====== 关键修复！suspended 期间绝对不能装新手势！======
+    if (_ttg_gesturesSuspended) {
+        NSLog(@"[TTG] 🔒 suspended=YES → 不装新手势，等面板关闭");
         return;
     }
 
@@ -2232,6 +2294,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (void)switchToggled:(UISwitch *)sw {
+    NSLog(@"[TTG] 🎛️ switchToggled: tag=%ld on=%d title=%@", (long)sw.tag, sw.isOn, _rows[sw.tag][@"title"]);
     if (sw.tag < 0 || sw.tag >= (int)_rows.count) return;
     NSDictionary *row = _rows[sw.tag];
     BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
