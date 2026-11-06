@@ -113,36 +113,35 @@ static NSInteger _ttg_global_touch_count = 0;
 #define TTG_SINGLE_DELAY      0.40
 #define TTG_SINGLE_MOVE_LIMIT 25.0
 
-// 关键：如果触摸点在评论区(UITableView)、搜索框(UITextField)、按钮(UIButton)等非视频区域 → 不接收触摸
+// 关键：只过滤明显非视频区域（按钮/搜索框/导航栏），不过滤 UIScrollView（因为视频卡片也在里面）
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
-    UIView *hitView = touch.view; // touch 所在的最内层 view
+    UIView *hitView = touch.view;
     UIView *v = hitView;
     while (v) {
-        NSString *cls = NSStringFromClass([v class]);
-        // 评论列表 / 搜索列表 / 任何 scrollView 容器（除了视频播放器可能内部的）
-        if ([v isKindOfClass:[UITableView class]] ||
-            [v isKindOfClass:[UICollectionView class]]) {
-            NSLog(@"[TTG] 👆 忽略 — 触摸在 UITableView/UICollectionView(%@) 里", cls);
-            return NO;
-        }
-        // 搜索框 / 输入框
-        if ([v isKindOfClass:[UITextField class]] ||
-            [v isKindOfClass:[UITextView class]]) {
-            NSLog(@"[TTG] 👆 忽略 — 触摸在文本框里");
-            return NO;
-        }
-        // 按钮（点赞/评论/分享/关注等所有按钮）
         if ([v isKindOfClass:[UIButton class]]) {
-            NSLog(@"[TTG] 👆 忽略 — 触摸在 UIButton 里");
+            NSLog(@"[TTG] 👆 忽略 — 触摸在 UIButton");
             return NO;
         }
-        // 导航栏 / 标签栏
-        if ([v isKindOfClass:[UINavigationBar class]] ||
-            [v isKindOfClass:[UITabBar class]]) {
-            NSLog(@"[TTG] 👆 忽略 — 触摸在导航/标签栏里");
+        if ([v isKindOfClass:[UITextField class]] || [v isKindOfClass:[UITextView class]]) {
+            NSLog(@"[TTG] 👆 忽略 — 触摸在文本框");
+            return NO;
+        }
+        if ([v isKindOfClass:[UINavigationBar class]] || [v isKindOfClass:[UITabBar class]]) {
+            NSLog(@"[TTG] 👆 忽略 — 触摸在导航/标签栏");
             return NO;
         }
         v = v.superview;
+    }
+    // 额外：如果有任何 present 出来的 VC 覆盖（评论 sheet、搜索页等）→ 不触发
+    UIViewController *rootVC = self.view.window.rootViewController;
+    if (rootVC.presentedViewController) {
+        // 但我们自己的 TTGSettingsViewController 和 TTGActionPanelView 例外
+        Class settingsCls = NSClassFromString(@"TTGSettingsViewController");
+        BOOL isOurs = [rootVC.presentedViewController isKindOfClass:settingsCls];
+        if (!isOurs) {
+            NSLog(@"[TTG] 👆 忽略 — 有 present 的 VC 覆盖: %@", NSStringFromClass([rootVC.presentedViewController class]));
+            return NO;
+        }
     }
     return YES;
 }
@@ -1719,7 +1718,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     [self setupUI];
-    [_tv reloadData]; // 让 cellForRow 重新创建 switch（避免复用问题）
+    // 不要在这里 reloadData —— 会触发 cellForRow 重复创建 switch
 }
 
 - (void)mainChanged:(UISwitch *)sw {
@@ -1748,12 +1747,17 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
 
     BOOL *flag = (BOOL *)[(NSValue *)it[@"ptr"] pointerValue];
-    UISwitch *sw = [[UISwitch alloc] init];
-    sw.on = flag ? *flag : NO;
-    if (@available(iOS 13.0, *)) sw.onTintColor = [UIColor systemGreenColor];
+    // 复用 accessoryView，不要每次新建
+    UISwitch *sw = (UISwitch *)cell.accessoryView;
+    if (!sw || ![sw isKindOfClass:[UISwitch class]]) {
+        sw = [[UISwitch alloc] init];
+        if (@available(iOS 13.0, *)) sw.onTintColor = [UIColor systemGreenColor];
+        cell.accessoryView = sw;
+    }
     sw.tag = indexPath.row;
+    sw.on = flag ? *flag : NO;
+    [sw removeTarget:nil action:nil forControlEvents:UIControlEventValueChanged];
     [sw addTarget:self action:@selector(itemToggled:) forControlEvents:UIControlEventValueChanged];
-    cell.accessoryView = sw;
     return cell;
 }
 
@@ -2060,9 +2064,6 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     NSString *action = row[@"action"];
     if (!action) return;
 
-    UIViewController *topVC = TTGTopVC();
-    if (!topVC) return;
-
     UIViewController *vc = nil;
     if ([action isEqualToString:@"region"]) {
         vc = [[TTGRegionPickerViewController alloc] init];
@@ -2075,17 +2076,25 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
     nav.navigationBar.tintColor = [UIColor systemBlueColor];
-    nav.modalPresentationStyle = UIModalPresentationOverFullScreen;
-    nav.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
-    nav.view.alpha = 0;
 
-    // 关键：present 到真正的 topVC（TikTok 主界面）上，而不是 self（OverFullScreen 覆盖层）
-    // 否则 iOS 转场上下文可能不正确，导致新 VC 里的触摸事件失效
-    [topVC presentViewController:nav animated:NO completion:^{
-        [UIView animateWithDuration:0.25 animations:^{
-            nav.view.alpha = 1;
-        }];
-    }];
+    // 关键：present 到 self（主设置面板）上，用标准 PageSheet 模态
+    // 这样 iOS 转场上下文正确，详情页的触摸事件能正常响应
+    if (@available(iOS 13.0, *)) {
+        nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    } else {
+        nav.modalPresentationStyle = UIModalPresentationFormSheet;
+    }
+
+    // 给 nav bar 加关闭按钮（如果 detail VC 没加的话）
+    vc.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+        initWithTitle:@"关闭" style:UIBarButtonItemStylePlain target:self
+        action:@selector(dismissDetail:)];
+
+    [self presentViewController:nav animated:YES completion:nil];
+}
+
+- (void)dismissDetail:(id)sender {
+    [self dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
