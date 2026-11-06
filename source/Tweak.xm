@@ -287,39 +287,84 @@ static void TTGDownloadCurrent(void) {
     
     TTGShowToast(@"⏳ 正在下载...");
     
-    // 设置 User-Agent 避免 403
     NSURL *url = [NSURL URLWithString:urlStr];
     if (!url) { TTGShowToast(@"❌ URL 无效"); return; }
     
+    // 用真实浏览器 UA，避免被 CDN 拒绝返回 HTML
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    [req setValue:@"com.ss.android.ugc.aweme" forHTTPHeaderField:@"X-App-Pkg"];
-    [req setValue:@"TikTok" forHTTPHeaderField:@"User-Agent"];
+    [req setValue:@"Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1" forHTTPHeaderField:@"User-Agent"];
+    [req setValue:@"https://www.tiktok.com/" forHTTPHeaderField:@"Referer"];
+    [req setTimeoutInterval:30];
     
     NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithRequest:req
         completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
-            if (error) {
+            if (error || !location) {
                 NSLog(@"[TTG] ❌ Download error: %@", error);
                 dispatch_async(dispatch_get_main_queue(), ^{ TTGShowToast(@"❌ 下载失败"); });
                 return;
             }
             
             NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
-            NSLog(@"[TTG] 📥 HTTP %ld bytes=%ld", (long)httpResp.statusCode, (long)[[NSFileManager defaultManager] attributesOfItemAtPath:location.path error:nil].fileSize);
+            NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:location.path error:nil];
+            long long fileSize = [attrs[NSFileSize] longLongValue];
+            NSLog(@"[TTG] 📥 HTTP %ld  size=%lld  type=%@", (long)httpResp.statusCode, fileSize, httpResp.MIMEType);
             
+            // 1) HTTP 错误检查
+            if (httpResp && httpResp.statusCode >= 400) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    TTGShowToast([NSString stringWithFormat:@"❌ 下载失败 HTTP %ld", (long)httpResp.statusCode]);
+                });
+                return;
+            }
+            if (fileSize < 10 * 1024) {
+                dispatch_async(dispatch_get_main_queue(), ^{ TTGShowToast(@"❌ 下载内容无效"); });
+                return;
+            }
+            
+            // 2) 关键修复：复制到带 .mp4 扩展名的临时文件，否则 PhotoKit 认不出视频类型
+            NSString *tmpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"ttg_%.0f.mp4", [[NSDate date] timeIntervalSince1970]]];
+            NSURL *mp4URL = [NSURL fileURLWithPath:tmpPath];
+            NSError *copyErr = nil;
+            [[NSFileManager defaultManager] removeItemAtURL:mp4URL error:nil];
+            if (![[NSFileManager defaultManager] copyItemAtURL:location toURL:mp4URL error:&copyErr]) {
+                NSLog(@"[TTG] ❌ copy error: %@", copyErr);
+                dispatch_async(dispatch_get_main_queue(), ^{ TTGShowToast(@"❌ 文件处理失败"); });
+                return;
+            }
+            NSLog(@"[TTG] 📥 已复制到 %@", tmpPath);
+            
+            // 3) 用 AVFoundation 校验是不是真正的视频
+            AVURLAsset *asset = [AVURLAsset URLAssetWithURL:mp4URL options:nil];
+            BOOL hasVideoTrack = NO;
+            for (AVAssetTrack *t in asset.tracks) {
+                if ([t.mediaType isEqualToString:AVMediaTypeVideo]) { hasVideoTrack = YES; break; }
+            }
+            NSLog(@"[TTG] 📥 视频轨道=%d 时长=%.2f", hasVideoTrack, CMTimeGetSeconds(asset.duration));
+            if (!hasVideoTrack) {
+                [[NSFileManager defaultManager] removeItemAtURL:mp4URL error:nil];
+                dispatch_async(dispatch_get_main_queue(), ^{ TTGShowToast(@"❌ 拿到的不是视频文件"); });
+                return;
+            }
+            
+            // 4) 保存到相册
             [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
                 if (status != PHAuthorizationStatusAuthorized) {
+                    [[NSFileManager defaultManager] removeItemAtURL:mp4URL error:nil];
                     dispatch_async(dispatch_get_main_queue(), ^{ TTGShowToast(@"❌ 没有相册权限"); });
                     return;
                 }
                 
                 [[PHPhotoLibrary sharedPhotoLibrary] performChanges:^{
-                    [PHAssetChangeRequest creationRequestForAssetFromVideoAtFileURL:location];
+                    [PHAssetChangeRequest creationRequestForAssetFromVideoAtFileURL:mp4URL];
                 } completionHandler:^(BOOL ok, NSError *err) {
+                    [[NSFileManager defaultManager] removeItemAtURL:mp4URL error:nil];
                     dispatch_async(dispatch_get_main_queue(), ^{
-                        if (ok) TTGShowToast(@"✅ 已保存到相册");
-                        else {
-                            NSLog(@"[TTG] ❌ Save error: %@", err);
-                            TTGShowToast(@"❌ 保存失败");
+                        if (ok) {
+                            TTGShowToast(@"✅ 已保存到相册");
+                        } else {
+                            NSLog(@"[TTG] ❌ Save error: %@ %@", err.domain, err.localizedDescription);
+                            TTGShowToast([NSString stringWithFormat:@"❌ 保存失败: %@", err.localizedDescription]);
                         }
                     });
                 }];
@@ -542,7 +587,7 @@ static void TTGRegisterHooks(void) {
 
 #pragma mark - Constructor
 
-%ctor {
+__attribute__((constructor)) static void TTGInit(void) {
     NSLog(@"[TTG] 🚀 ctor 启动");
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         @try {
