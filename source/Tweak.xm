@@ -862,8 +862,8 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     dbl.delaysTouchesBegan = NO;
     dbl.delaysTouchesEnded = NO;
 
-    // 让单指长按失败后双指才能触发（避免冲突）
-    [dbl requireGestureRecognizerToFail:single];
+    // 关键：单指等双指失败 → 双指操作时单指不会误触
+    [single requireGestureRecognizerToFail:dbl];
 
     [win addGestureRecognizer:single];
     [win addGestureRecognizer:dbl];
