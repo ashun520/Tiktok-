@@ -833,17 +833,18 @@ static NSHashTable *_ttg_windowsWithGesture = nil;
 }
 
 // MARK: - UIGestureRecognizerDelegate
-// 让 window 上的手势优先，TikTok 内部的手势必须等我们先失败
+// 让 window 上的单指长按优先于子视图长按，但不拦截滑动
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
 shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    // 其他任何手势（包括 TikTok 内部长按）都等我们先失败
-    if (gestureRecognizer.view && [gestureRecognizer.view isKindOfClass:[UIWindow class]]) {
+    // 只让长按/tap类 require 我们失败（我们先触发 0.4s，比 TikTok 的 0.5s 早）
+    // pan/swipe/pinch 等一律不拦截（返回 NO），让视频上下滑动正常
+    if ([otherGestureRecognizer isKindOfClass:[UILongPressGestureRecognizer class]] ||
+        [otherGestureRecognizer isKindOfClass:[UITapGestureRecognizer class]]) {
         return YES;
     }
     return NO;
 }
-
-// 允许同时识别（避免 iOS 系统自动取消）
+// 允许同时识别（但长按/tap类已被上面的反向require拦住）
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
 shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
     return YES;
@@ -863,8 +864,8 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         initWithTarget:[TTGLongPressHandler shared] action:@selector(handleSingleLongPress:)];
     single.minimumPressDuration = 0.4;
     single.numberOfTouchesRequired = 1;
-    single.allowableMovement = 25;
-    single.cancelsTouchesInView = NO;
+    single.allowableMovement = 10;   // 关键：手指一动就 fail，不影响滑动
+    single.cancelsTouchesInView = YES;  // 默认就是 YES，成功时 cancel 子视图长按
     single.delaysTouchesBegan = NO;
     single.delaysTouchesEnded = NO;
 
@@ -874,7 +875,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     dbl.minimumPressDuration = 0.5;
     dbl.numberOfTouchesRequired = 2;
     dbl.allowableMovement = 30;
-    dbl.cancelsTouchesInView = NO;
+    dbl.cancelsTouchesInView = YES;
     dbl.delaysTouchesBegan = NO;
     dbl.delaysTouchesEnded = NO;
 
