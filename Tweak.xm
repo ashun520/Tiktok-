@@ -1378,39 +1378,24 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
         _panelShowing = YES;
         NSLog(@"[TTG] ✅ ✌️ 双指长按 BEGAN → 弹设置面板");
 
-        // 1. 彻底 remove 我们的手势
+        // 1. 彻底 remove 我们的手势（物理从 window 上卸掉）
         TTGSetWindowLongPressEnabled(NO);
 
-        // 2. 同时 disable window 上**所有** gesture recognizers（包括 TikTok 自己的）
-        // 任何 window 级手势都可能干扰触摸路由
-        UIWindow *win = TTGFrontmostWindow();
-        if (win) {
-            int total = 0;
-            for (UIGestureRecognizer *g in win.gestureRecognizers) {
-                g.enabled = NO;
-                total++;
-            }
-            NSLog(@"[TTG] ✋✋✋ 同时 disable 了 window 上所有 %d 个手势（含 TikTok 自己的）", total);
-        }
-
+        UIViewController *topVC = TTGTopVC();
+        if (!topVC) { _panelShowing = NO; TTGSetWindowLongPressEnabled(YES); return; }
         Class cls = NSClassFromString(@"TTGSettingsViewController");
         if (!cls) { _panelShowing = NO; TTGSetWindowLongPressEnabled(YES); return; }
         UIViewController *vc = [[cls alloc] init];
         if (!vc) { _panelShowing = NO; TTGSetWindowLongPressEnabled(YES); return; }
 
-        // ====== 不走 presentViewController！直接 addSubview 到 window ======
-        // OverFullScreen present 会保留底下 VC 的运行状态，可能干扰触摸
-        vc.view.frame = win.bounds;
+        // presentViewController — TableView 能正常渲染
+        vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
+        vc.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
         vc.view.alpha = 0;
-        vc.view.tag = 8888;
-        [win addSubview:vc.view];
-        NSLog(@"[TTG] 📱 TTGSettingsViewController.view 已直接 addSubview 到 window（不走 present）");
-
-        [UIView animateWithDuration:0.2 animations:^{
-            vc.view.alpha = 1;
-        } completion:^(BOOL _) {
-            NSLog(@"[TTG] ✅ 主设置面板显示完成 → switch 现在应该能点了！");
-            NSLog(@"[TTG] 📋 触摸调试：cell 创建时会有日志，switchToggled 触发时也会有日志");
+        [topVC presentViewController:vc animated:NO completion:^{
+            [UIView animateWithDuration:0.2 animations:^{
+                vc.view.alpha = 1;
+            }];
         }];
     }
     if (gr.state == UIGestureRecognizerStateEnded || gr.state == UIGestureRecognizerStateCancelled || gr.state == UIGestureRecognizerStateFailed) {
@@ -1924,7 +1909,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 
 #pragma mark - 设置页（液态玻璃）
 
-@interface TTGSettingsViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@interface TTGSettingsViewController : UIViewController <UITableViewDataSource, UITableViewDelegate, UIGestureRecognizerDelegate>
 @end
 
 @implementation TTGSettingsViewController {
@@ -2042,6 +2027,9 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     // 点遮罩关闭
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dismissSelf)];
     tap.cancelsTouchesInView = NO;
+    tap.delaysTouchesBegan = NO;
+    tap.delaysTouchesEnded = NO;
+    tap.delegate = self;
     [_dimmingView addGestureRecognizer:tap];
 }
 
@@ -2109,27 +2097,23 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (void)dismissSelf {
-    NSLog(@"[TTG] 🚪 dismissSelf → removeFromSuperview + 恢复所有手势");
-    [UIView animateWithDuration:0.15 animations:^{
-        self.view.alpha = 0;
-    } completion:^(BOOL _) {
-        [self.view removeFromSuperview];
-
-        // 1. 恢复 window 上**所有**手势（包括 TikTok 自己的）
-        UIWindow *win = TTGFrontmostWindow();
-        if (win) {
-            int total = 0;
-            for (UIGestureRecognizer *g in win.gestureRecognizers) {
-                g.enabled = YES;
-                total++;
-            }
-            NSLog(@"[TTG] ✋ 恢复 window 上所有 %d 个手势", total);
-        }
-
-        // 2. 恢复我们的手势
+    NSLog(@"[TTG] 🚪 dismissSelf → present dismiss + 恢复手势");
+    [self dismissViewControllerAnimated:YES completion:^{
         TTGSetWindowLongPressEnabled(YES);
-        NSLog(@"[TTG] ✅ 主设置面板关闭完成");
+        NSLog(@"[TTG] ✅ 设置面板关闭 → 手势已恢复");
     }];
+}
+
+// UIGestureRecognizerDelegate — 点在 card 区域时不触发 dimmingView 的 tap
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
+    // 禁止 dimmingView 的 tap 手势接收 card 内部的触摸！
+    // 防止它延迟/吞掉 switch 等控件的触摸事件
+    CGPoint pt = [touch locationInView:self.view];
+    if (CGRectContainsPoint(_card.frame, pt)) {
+        NSLog(@"[TTG] 🛡️ tap在card上 → 拒绝dimmingView手势（保护switch触摸）");
+        return NO;
+    }
+    return YES;
 }
 
 - (void)toggleAllOn {
@@ -2322,12 +2306,21 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
     if (flag) *flag = sw.isOn;
 
+    // 振动反馈 —— 让用户无电脑也能验证触摸是否到达！
+    if (@available(iOS 10.0, *)) {
+        UIImpactFeedbackGenerator *fb = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+        [fb impactOccurred];
+    }
+
     // 立即应用
     if (flag == &tabBarTransparent) {
         TTGApplyTabBarTransparent();
     } else if (flag == &hideTopBarItems) {
         TTGApplyHideTopBar();
     }
+
+    // 强制刷新 tableView（保险起见）
+    [_tableView reloadData];
 }
 
 - (UIStatusBarStyle)preferredStatusBarStyle {
