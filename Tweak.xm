@@ -1378,36 +1378,39 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
         _panelShowing = YES;
         NSLog(@"[TTG] ✅ ✌️ 双指长按 BEGAN → 弹设置面板");
 
-        // 关键：present TTGSettingsViewController 之前先 disable 所有 window 上的长按手势！
-        // 任何 UILongPressGestureRecognizer 的存在都会干扰底下子视图的触摸路由！
+        // 1. 彻底 remove 我们的手势
         TTGSetWindowLongPressEnabled(NO);
-        NSLog(@"[TTG] ✋ window 长按手势已 disabled → 设置面板 present");
 
-        UIViewController *topVC = TTGTopVC();
-        if (!topVC) { _panelShowing = NO; TTGSetWindowLongPressEnabled(YES); return; }
+        // 2. 同时 disable window 上**所有** gesture recognizers（包括 TikTok 自己的）
+        // 任何 window 级手势都可能干扰触摸路由
+        UIWindow *win = TTGFrontmostWindow();
+        if (win) {
+            int total = 0;
+            for (UIGestureRecognizer *g in win.gestureRecognizers) {
+                g.enabled = NO;
+                total++;
+            }
+            NSLog(@"[TTG] ✋✋✋ 同时 disable 了 window 上所有 %d 个手势（含 TikTok 自己的）", total);
+        }
+
         Class cls = NSClassFromString(@"TTGSettingsViewController");
         if (!cls) { _panelShowing = NO; TTGSetWindowLongPressEnabled(YES); return; }
         UIViewController *vc = [[cls alloc] init];
         if (!vc) { _panelShowing = NO; TTGSetWindowLongPressEnabled(YES); return; }
-        vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
-        vc.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
+
+        // ====== 不走 presentViewController！直接 addSubview 到 window ======
+        // OverFullScreen present 会保留底下 VC 的运行状态，可能干扰触摸
+        vc.view.frame = win.bounds;
         vc.view.alpha = 0;
-        [topVC presentViewController:vc animated:NO completion:^{
-            [UIView animateWithDuration:0.2 animations:^{
-                vc.view.alpha = 1;
-            } completion:^(BOOL _) {
-                // 确认 window 上真的没有我们的手势了
-                UIWindow *fw = TTGFrontmostWindow();
-                int remain = 0;
-                for (UIGestureRecognizer *g in fw.gestureRecognizers) {
-                    if ([g isKindOfClass:[TTGSinglePressRecognizer class]]) remain++;
-                    if ([g isKindOfClass:[UILongPressGestureRecognizer class]] &&
-                        ![g isKindOfClass:[TTGSinglePressRecognizer class]] &&
-                        ((UILongPressGestureRecognizer *)g).numberOfTouchesRequired == 2) remain++;
-                }
-                NSLog(@"[TTG] ✅ present 完成 → window 上剩余手势数=%d（应为0）", remain);
-                NSLog(@"[TTG] 🎯 TTGSettingsViewController 已 present，switch 应该能点了！");
-            }];
+        vc.view.tag = 8888;
+        [win addSubview:vc.view];
+        NSLog(@"[TTG] 📱 TTGSettingsViewController.view 已直接 addSubview 到 window（不走 present）");
+
+        [UIView animateWithDuration:0.2 animations:^{
+            vc.view.alpha = 1;
+        } completion:^(BOOL _) {
+            NSLog(@"[TTG] ✅ 主设置面板显示完成 → switch 现在应该能点了！");
+            NSLog(@"[TTG] 📋 触摸调试：cell 创建时会有日志，switchToggled 触发时也会有日志");
         }];
     }
     if (gr.state == UIGestureRecognizerStateEnded || gr.state == UIGestureRecognizerStateCancelled || gr.state == UIGestureRecognizerStateFailed) {
@@ -1934,6 +1937,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    NSLog(@"[TTG] 🎬 TTGSettingsViewController viewDidLoad 开始 — self=%@", self);
     self.view.backgroundColor = [UIColor clearColor];
     self.view.opaque = NO;
 
@@ -2105,10 +2109,26 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (void)dismissSelf {
-    [self dismissViewControllerAnimated:YES completion:^{
-        // 关键：恢复 window 上的长按手势！
+    NSLog(@"[TTG] 🚪 dismissSelf → removeFromSuperview + 恢复所有手势");
+    [UIView animateWithDuration:0.15 animations:^{
+        self.view.alpha = 0;
+    } completion:^(BOOL _) {
+        [self.view removeFromSuperview];
+
+        // 1. 恢复 window 上**所有**手势（包括 TikTok 自己的）
+        UIWindow *win = TTGFrontmostWindow();
+        if (win) {
+            int total = 0;
+            for (UIGestureRecognizer *g in win.gestureRecognizers) {
+                g.enabled = YES;
+                total++;
+            }
+            NSLog(@"[TTG] ✋ 恢复 window 上所有 %d 个手势", total);
+        }
+
+        // 2. 恢复我们的手势
         TTGSetWindowLongPressEnabled(YES);
-        NSLog(@"[TTG] ✋ window 长按手势已 enabled → 设置面板 dismiss 完成");
+        NSLog(@"[TTG] ✅ 主设置面板关闭完成");
     }];
 }
 
@@ -2194,6 +2214,8 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         sw.on = flag ? *flag : NO;
         [sw removeTarget:nil action:nil forControlEvents:UIControlEventValueChanged];
         [sw addTarget:self action:@selector(switchToggled:) forControlEvents:UIControlEventValueChanged];
+        NSLog(@"[TTG] 📋 cellForRow[%ld] → switch tag=%ld target=%@ self=%@",
+              (long)indexPath.row, (long)sw.tag, NSStringFromClass([self class]), self);
     }
     return cell;
 }
