@@ -1827,6 +1827,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     UITableView *_tableView;
     UIView *_dimmingView;
     UIView *_card;
+    UINavigationController *_detailNav;  // 强持有详情页 nav，防止 vc 被释放
 }
 
 - (void)viewDidLoad {
@@ -2113,6 +2114,9 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         initWithTitle:@"关闭" style:UIBarButtonItemStylePlain target:self
         action:@selector(removeNavFromWindow)];
 
+    // 关键：强持有 nav！否则 ARC 立即释放 nav 和 vc → switch 的 target 变野指针
+    _detailNav = nav;
+
     // 关键：不走 present！直接把 nav.view 加到 window 上
     // 彻底绕过 iOS 嵌套 present 的触摸事件问题
     UIWindow *win = nil;
@@ -2155,9 +2159,14 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         if (v) {
             [UIView animateWithDuration:0.2 animations:^{ v.alpha = 0; } completion:^(BOOL done) {
                 [v removeFromSuperview];
+                // 关闭后清空强引用，让 nav/vc 正常释放
+                self->_detailNav = nil;
             }];
+            return;
         }
     }
+    // 如果没找到（可能已被移除），也要清空引用
+    self->_detailNav = nil;
 }
 
 // 兼容旧方法（如果哪里还在调）
