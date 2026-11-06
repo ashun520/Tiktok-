@@ -113,15 +113,21 @@ static NSInteger _ttg_global_touch_count = 0;
 #define TTG_SINGLE_DELAY      0.40
 #define TTG_SINGLE_MOVE_LIMIT 25.0
 
-// 关键：只过滤明显非视频区域（按钮/搜索框/导航栏），不过滤 UIScrollView（因为视频卡片也在里面）
+// 关键：不依赖容器类型过滤（TikTok 视频 feed 可能在 UICollectionView 里）
+// 改用类名关键词识别评论/搜索/输入区域
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
     UIView *hitView = touch.view;
     UIView *v = hitView;
     while (v) {
-        // 评论列表 / 搜索列表 —— 过滤！这些是 UITableView/UICollectionView
-        if ([v isKindOfClass:[UITableView class]] ||
-            [v isKindOfClass:[UICollectionView class]]) {
-            NSLog(@"[TTG] 👆 忽略 — 触摸在 UITableView/UICollectionView(评论/搜索列表)");
+        NSString *clsName = NSStringFromClass([v class]);
+        // 评论区
+        if ([clsName rangeOfString:@"Comment" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            NSLog(@"[TTG] 👆 忽略 — 触摸在评论区(%@)", clsName);
+            return NO;
+        }
+        // 搜索区域
+        if ([clsName rangeOfString:@"Search" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            NSLog(@"[TTG] 👆 忽略 — 触摸在搜索区(%@)", clsName);
             return NO;
         }
         if ([v isKindOfClass:[UIButton class]]) {
@@ -138,17 +144,24 @@ static NSInteger _ttg_global_touch_count = 0;
         }
         v = v.superview;
     }
-    // 如果有 present 的 VC 覆盖（评论 sheet、搜索页等）→ 不触发
+    // 只要有任何 present 的 VC 覆盖 → 都不触发长按
+    // 包括评论 sheet、搜索页、我们的设置面板、我们的详情页
     UIViewController *rootVC = self.view.window.rootViewController;
     if (rootVC.presentedViewController) {
-        Class settingsCls = NSClassFromString(@"TTGSettingsViewController");
-        BOOL isOurs = [rootVC.presentedViewController isKindOfClass:settingsCls];
-        if (!isOurs) {
-            NSLog(@"[TTG] 👆 忽略 — 有 present VC 覆盖: %@", NSStringFromClass([rootVC.presentedViewController class]));
-            return NO;
-        }
+        NSLog(@"[TTG] 👆 忽略 — 有 present VC 覆盖: %@", NSStringFromClass([rootVC.presentedViewController class]));
+        return NO;
     }
     return YES;
+}
+
+// 关键：我们不跟任何人竞争！不 cancel TikTok 内部的长按手势（翻译/复制菜单）
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    return YES;
+}
+
+// 关键：不让别人 require 我们 Fail —— 我们的 0.4s timer 必须正常跑完
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    return NO;
 }
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
@@ -2084,20 +2097,16 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
     nav.navigationBar.tintColor = [UIColor systemBlueColor];
 
-    // 关键：present 到 self（主设置面板）上，用标准 PageSheet 模态
-    // 这样 iOS 转场上下文正确，详情页的触摸事件能正常响应
-    if (@available(iOS 13.0, *)) {
-        nav.modalPresentationStyle = UIModalPresentationPageSheet;
-    } else {
-        nav.modalPresentationStyle = UIModalPresentationFormSheet;
-    }
+    // present 到 self（主设置面板）上，用 OverFullScreen + 手动 alpha
+    // 必须 present 到 self！topVC 已经 present 了 self，iOS 不允许同时 present 两个
+    // OverFullScreen 确保底下的 self.view 不被卸载，触摸事件正常传
+    nav.modalPresentationStyle = UIModalPresentationOverFullScreen;
+    nav.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
+    nav.view.alpha = 0;
 
-    // 给 nav bar 加关闭按钮（如果 detail VC 没加的话）
-    vc.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
-        initWithTitle:@"关闭" style:UIBarButtonItemStylePlain target:self
-        action:@selector(dismissDetail:)];
-
-    [self presentViewController:nav animated:YES completion:nil];
+    [self presentViewController:nav animated:NO completion:^{
+        [UIView animateWithDuration:0.25 animations:^{ nav.view.alpha = 1; }];
+    }];
 }
 
 - (void)dismissDetail:(id)sender {
