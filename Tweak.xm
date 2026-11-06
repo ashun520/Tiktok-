@@ -1371,6 +1371,9 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
     }
 }
 
+// 全局强持有设置面板 VC（addSubview 到 window 时必须强持有防 ARC 释放）
+static UIViewController *_ttg_settingsVC = nil;
+
 // 双指长按 → 设置面板
 - (void)handleDoubleLongPress:(UILongPressGestureRecognizer *)gr {
     if (gr.state == UIGestureRecognizerStateBegan) {
@@ -1378,20 +1381,39 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
         _panelShowing = YES;
         NSLog(@"[TTG] ✅ ✌️ 双指长按 BEGAN → 弹设置面板");
 
-        // 🔴 关键！present 之前彻底 removeFromSuperview 我们的手势！
-        // 否则 window 上的 TTGSinglePressRecognizer 会吞掉设置面板里 switch 的触摸
+        // 🔴 关键！之前用 presentViewController OverFullScreen —— TikTok 内部会截断触摸事件！
+        // TTGActionPanelView（功能面板）能点，因为它是直接 addSubview 到 window 的。
+        // 所以这里也改成 addSubview 到 window，跟功能面板一模一样的方式！
+
         TTGSetWindowLongPressEnabled(NO);
 
-        UIViewController *topVC = TTGTopVC();
-        if (!topVC) { TTGSetWindowLongPressEnabled(YES); _panelShowing = NO; return; }
         Class cls = NSClassFromString(@"TTGSettingsViewController");
         if (!cls) { TTGSetWindowLongPressEnabled(YES); _panelShowing = NO; return; }
-        UIViewController *vc = [[cls alloc] init];
-        if (!vc) { TTGSetWindowLongPressEnabled(YES); _panelShowing = NO; return; }
+        _ttg_settingsVC = [[cls alloc] init];
+        if (!_ttg_settingsVC) { TTGSetWindowLongPressEnabled(YES); _panelShowing = NO; return; }
 
-        vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
-        vc.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
-        [topVC presentViewController:vc animated:NO completion:nil];
+        UIWindow *win = TTGFrontmostWindow();
+        if (!win) { TTGSetWindowLongPressEnabled(YES); _ttg_settingsVC = nil; _panelShowing = NO; return; }
+
+        // 手动触发 viewDidLoad / viewDidLayoutSubviews（不走 present 流程不会自动调）
+        // access vc.view 会自动触发 viewDidLoad
+        UIView *vcView = _ttg_settingsVC.view;
+        vcView.frame = win.bounds;
+        vcView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        vcView.tag = 9999;
+        vcView.alpha = 0;
+
+        [win addSubview:vcView];
+
+        // 手动 layout
+        [_ttg_settingsVC viewDidLayoutSubviews];
+
+        // 淡入动画
+        [UIView animateWithDuration:0.25 animations:^{
+            vcView.alpha = 1;
+        }];
+
+        NSLog(@"[TTG] ✅ 设置面板已 addSubview 到 window，vc=%@", _ttg_settingsVC);
     }
     if (gr.state == UIGestureRecognizerStateEnded || gr.state == UIGestureRecognizerStateCancelled || gr.state == UIGestureRecognizerStateFailed) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -2203,19 +2225,28 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (void)dismissSelf {
-    NSLog(@"[TTG] 🔒 dismissSelf → 关闭设置面板");
-    [self dismissViewControllerAnimated:YES completion:^{
-        // 🔴 关键！关闭后恢复 window 上的手势
+    NSLog(@"[TTG] 🔒 dismissSelf → removeFromSuperview 设置面板");
+    [UIView animateWithDuration:0.2 animations:^{
+        self.view.alpha = 0;
+    } completion:^(BOOL done) {
+        [self.view removeFromSuperview];
+        // 释放 static 引用（必须在 removeFromSuperview 之后）
+        _ttg_settingsVC = nil;
+        // 恢复 window 上的手势
         TTGSetWindowLongPressEnabled(YES);
-        NSLog(@"[TTG] 🔒 dismissSelf → 手势已恢复");
+        NSLog(@"[TTG] 🔒 dismissSelf → 已释放 + 手势已恢复");
     }];
 }
 
-// 兜底：任何方式（包括系统 dismiss）消失时都恢复手势
+// 兜底：系统层面消失时也做清理（不走 present 流程所以这个基本不会触发，留着保险）
 - (void)viewDidDisappear:(BOOL)animated {
     [super viewDidDisappear:animated];
-    NSLog(@"[TTG] viewDidDisappear → 兜底恢复手势");
-    TTGSetWindowLongPressEnabled(YES);
+    if (!_ttg_settingsVC || _ttg_settingsVC == self) {
+        // 如果是通过别的方式消失的（比如系统），也清理
+        [self.view removeFromSuperview];
+        _ttg_settingsVC = nil;
+        TTGSetWindowLongPressEnabled(YES);
+    }
 }
 
 - (void)toggleAllOn {
