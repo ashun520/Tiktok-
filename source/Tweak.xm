@@ -498,7 +498,7 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
     [_dimmingView addGestureRecognizer:tap];
 
     // 底部 sheet（磨砂玻璃）
-    _sheetH = 380;
+    _sheetH = 280;   // 改小（只有按钮，没有滑块）
     CGFloat bottomPad = 0;
     if (@available(iOS 11.0, *)) {
         UIWindow *w = TTGFrontmostWindow();
@@ -583,44 +583,7 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
         [btnContainer addSubview:btn];
     }
 
-    // 开关行
-    struct { NSString *t; BOOL *p; } raw[] = {
-        { @"🇺🇸 美国地区", &changeRegion },
-        { @"📺 画中画 PiP", &enablePIP },
-        { @"🎯 强制进度条", &showProgressBar },
-        { @"▶️ 自动连播", &autoPlayNextVideo },
-        { @"📴 去广告", &noads },
-        { @"🎭 隐藏UI", &canHideUI },
-        { @"🔊 后台播放", &enableBackgroundPlay },
-        { @"🛡️ 安全绕过", &enableBypass },
-    };
-    int n = sizeof(raw)/sizeof(raw[0]);
-
-    UIView *swContainer = [[UIView alloc] init];
-    swContainer.tag = 9002;
-    [_sheet addSubview:swContainer];
-
-    for (int i = 0; i < n; i++) {
-        UIView *row = [[UIView alloc] init];
-        row.tag = 9100 + i;
-
-        UILabel *lbl = [[UILabel alloc] init];
-        lbl.text = raw[i].t;
-        lbl.font = [UIFont systemFontOfSize:14];
-        lbl.textColor = [UIColor colorWithWhite:0 alpha:0.82];
-        [row addSubview:lbl];
-
-        UISwitch *sw = [[UISwitch alloc] init];
-        if (@available(iOS 13.0, *)) sw.onTintColor = [UIColor systemGreenColor];
-        sw.on = raw[i].p ? *raw[i].p : NO;
-        sw.tag = i;
-        [sw addTarget:self action:@selector(switchToggled:) forControlEvents:UIControlEventValueChanged];
-        [_ttg_switch_ptrs addObject:(raw[i].p ? [NSValue valueWithPointer:raw[i].p] : [NSNull null])];
-        [row addSubview:sw];
-
-        [swContainer addSubview:row];
-    }
-
+    // 开关已移到双指长按的设置面板，这里只留主动作按钮
     // 关闭按钮
     UIButton *sheetClose = [UIButton buttonWithType:UIButtonTypeSystem];
     [sheetClose setTitle:@"关闭" forState:UIControlStateNormal];
@@ -709,37 +672,17 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
     sub.frame = CGRectMake(pad, 38, 200, 14);
     closeBtn.frame = CGRectMake(W - 46, 12, 28, 28);
 
-    // 按钮容器：y = 70, 2行 x 2列 = 96pt
+    // 按钮容器：y = 70, 2行 x 2列 = 106pt
     UIView *btnContainer = (UIView *)[_sheet viewWithTag:9001];
-    btnContainer.frame = CGRectMake(pad, 70, W - pad * 2, 106);
-
-    // 开关容器：从 186 开始
-    UIView *swContainer = (UIView *)[_sheet viewWithTag:9002];
-    swContainer.frame = CGRectMake(pad, 186, W - pad * 2, 140);
-
-    // 开关 2列 x 4行
-    int n = 8;
-    CGFloat rowH = 34;
-    CGFloat colW = (W - pad * 2 - 16) / 2;
-    for (int i = 0; i < n; i++) {
-        UIView *row = (UIView *)[swContainer viewWithTag:9100 + i];
-        if (!row) continue;
-        int col = i % 2;
-        int rowIdx = i / 2;
-        row.frame = CGRectMake(col * (colW + 16), rowIdx * rowH, colW, rowH);
-        UILabel *lbl = (UILabel *)row.subviews.firstObject;
-        UISwitch *sw = (UISwitch *)row.subviews.lastObject;
-        lbl.frame = CGRectMake(0, 6, colW - 54, 22);
-        sw.frame = CGRectMake(colW - 51, 3, 51, 31);
-    }
+    btnContainer.frame = CGRectMake(pad, 68, W - pad * 2, 106);
 
     // 关闭按钮
     UIButton *sheetClose = (UIButton *)[_sheet viewWithTag:9003];
-    sheetClose.frame = CGRectMake((W - 100) / 2, _sheetH - 60, 100, 40);
+    sheetClose.frame = CGRectMake((W - 100) / 2, _sheetH - 56, 100, 40);
 
     // 底部署名
     UILabel *footer = (UILabel *)[_sheet viewWithTag:9004];
-    footer.frame = CGRectMake(pad, _sheetH - 24, W - pad * 2, 16);
+    footer.frame = CGRectMake(pad, _sheetH - 20, W - pad * 2, 14);
 }
 
 - (UIView *)findViewIn:(UIView *)root type:(NSString *)clsName idx:(int)idx {
@@ -817,27 +760,48 @@ static NSHashTable *_ttg_windowsWithGesture = nil;
 }
 // 双指长按 → 设置面板（插件开关）
 - (void)handleDoubleLongPress:(UILongPressGestureRecognizer *)gr {
-    if (gr.state == UIGestureRecognizerStateBegan) {
-        NSLog(@"[TTG] ✌️ 双指长按 → 设置面板");
-        Class cls = NSClassFromString(@"TTGSettingsViewController");
-        if (!cls) { NSLog(@"[TTG] ❌ TTGSettingsViewController 未找到"); return; }
-        id vc = [[cls alloc] init];
-        if ([vc isKindOfClass:[UIViewController class]]) {
-            [(UIViewController *)vc setModalPresentationStyle:UIModalPresentationOverCurrentContext];
-            UIViewController *topVC = TTGTopVC();
-            if (topVC) {
-                [topVC presentViewController:(UIViewController *)vc animated:YES completion:nil];
-            }
-        }
-    }
+    if (gr.state != UIGestureRecognizerStateBegan) return;
+    NSLog(@"[TTG] ✌️ 双指长按 → 设置面板");
+    // 用 addSubview 代替 presentViewController，避开 TikTok 的 VC present 逻辑导致闪一下
+    Class cls = NSClassFromString(@"TTGSettingsViewController");
+    if (!cls) { NSLog(@"[TTG] ❌ TTGSettingsViewController 未找到"); return; }
+    id vc = [[cls alloc] init];
+    if (![vc isKindOfClass:[UIViewController class]]) return;
+
+    UIViewController *realVC = (UIViewController *)vc;
+    UIWindow *win = TTGFrontmostWindow();
+    if (!win) return;
+
+    // 创建一个容器 view，addSubview VC.view + 半透明背景
+    UIView *container = [[UIView alloc] initWithFrame:win.bounds];
+    container.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
+    container.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+
+    realVC.view.frame = CGRectMake(0, win.bounds.size.height, win.bounds.size.width, win.bounds.size.height);
+    realVC.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [container addSubview:realVC.view];
+    [win addSubview:container];
+
+    // 动画滑入
+    [UIView animateWithDuration:0.3 animations:^{
+        container.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
+        CGRect f = realVC.view.frame;
+        f.origin.y = 0;
+        realVC.view.frame = f;
+    }];
 }
 
 // MARK: - UIGestureRecognizerDelegate
-// 让 window 上的单指长按优先于子视图长按，但不拦截滑动
+// 关键修复：window 上的手势（我们自己装的）互相不 require，否则死锁
+// 只让子视图（TikTok 内部）的长按/tap require 我们失败
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
 shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    // 只让长按/tap类 require 我们失败（我们先触发 0.4s，比 TikTok 的 0.5s 早）
-    // pan/swipe/pinch 等一律不拦截（返回 NO），让视频上下滑动正常
+    // 排除：other 也在 window 上（也是我们装的），不互相 require
+    if (otherGestureRecognizer.view && [otherGestureRecognizer.view isKindOfClass:[UIWindow class]]) {
+        return NO;
+    }
+    // 只让子视图的长按/tap require 我们失败（我们 0.4s 先触发）
+    // pan/swipe/pinch 一律放行，保证上下滑动正常
     if ([otherGestureRecognizer isKindOfClass:[UILongPressGestureRecognizer class]] ||
         [otherGestureRecognizer isKindOfClass:[UITapGestureRecognizer class]]) {
         return YES;
