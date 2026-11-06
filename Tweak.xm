@@ -1417,80 +1417,135 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     [super viewDidLoad];
     self.title = @"🎛️ 底栏设置";
     self.view.backgroundColor = [UIColor systemBackgroundColor];
+    [self setupUI];
+}
 
-    CGFloat top = 120;
+- (void)setupUI {
+    // 清旧的 label/hint/preview（tag >= 9000 的）
+    [[self.view.subviews copy] enumerateObjectsUsingBlock:^(UIView *v, NSUInteger idx, BOOL *stop) {
+        if (v.tag >= 9000 && v.tag != 9101 && v.tag != 9102 && v.tag != 9103) [v removeFromSuperview];
+    }];
+
+    CGFloat h = self.view.bounds.size.height;
+    CGFloat w = self.view.bounds.size.width;
+    if (w <= 0) w = [UIScreen mainScreen].bounds.size.width;
+    if (h <= 0) h = [UIScreen mainScreen].bounds.size.height;
+
     CGFloat pad = 20;
-    CGFloat w = self.view.bounds.size.width - pad * 2;
+    CGFloat top = 120;
 
-    // 总开关
-    UILabel *lbl1 = [[UILabel alloc] initWithFrame:CGRectMake(pad, top, 200, 30)];
-    lbl1.text = @"启用底栏设置";
-    lbl1.font = [UIFont boldSystemFontOfSize:16];
-    [self.view addSubview:lbl1];
+    // 总开关 Label
+    UILabel *lbl1 = (UILabel *)[self.view viewWithTag:9001];
+    if (!lbl1) {
+        lbl1 = [[UILabel alloc] init];
+        lbl1.tag = 9001;
+        lbl1.text = @"启用底栏设置";
+        lbl1.font = [UIFont boldSystemFontOfSize:16];
+        [self.view addSubview:lbl1];
+    }
+    lbl1.frame = CGRectMake(pad, top, w - pad * 2 - 80, 30);
 
-    _mainSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(w+pad-60, top, 60, 30)];
-    _mainSwitch.on = tabBarTransparent;
-    [_mainSwitch addTarget:self action:@selector(mainChanged:) forControlEvents:UIControlEventValueChanged];
+    // 总开关 Switch
+    if (!_mainSwitch) {
+        _mainSwitch = [[UISwitch alloc] init];
+        _mainSwitch.on = tabBarTransparent;
+        [_mainSwitch addTarget:self action:@selector(mainChanged:) forControlEvents:UIControlEventValueChanged];
+    }
+    _mainSwitch.frame = CGRectMake(w - pad - 60, top, 60, 30);
     [self.view addSubview:_mainSwitch];
 
-    top += 50;
+    top += 60;
 
-    // 悬浮模式
-    UILabel *lbl2 = [[UILabel alloc] initWithFrame:CGRectMake(pad, top, 200, 30)];
-    lbl2.text = @"🧊 悬浮底栏（圆角+阴影+毛玻璃）";
-    lbl2.font = [UIFont systemFontOfSize:15];
-    [self.view addSubview:lbl2];
+    // 悬浮 Label
+    UILabel *lbl2 = (UILabel *)[self.view viewWithTag:9002];
+    if (!lbl2) {
+        lbl2 = [[UILabel alloc] init];
+        lbl2.tag = 9002;
+        lbl2.text = @"🧊 悬浮底栏（圆角+阴影+毛玻璃）";
+        lbl2.font = [UIFont systemFontOfSize:15];
+        [self.view addSubview:lbl2];
+    }
+    lbl2.frame = CGRectMake(pad, top, w - pad * 2 - 80, 30);
 
-    _floatSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(w+pad-60, top, 60, 30)];
-    _floatSwitch.on = tabBarFloating;
-    [_floatSwitch addTarget:self action:@selector(floatChanged:) forControlEvents:UIControlEventValueChanged];
+    if (!_floatSwitch) {
+        _floatSwitch = [[UISwitch alloc] init];
+        _floatSwitch.on = tabBarFloating;
+        [_floatSwitch addTarget:self action:@selector(floatChanged:) forControlEvents:UIControlEventValueChanged];
+    }
+    _floatSwitch.frame = CGRectMake(w - pad - 60, top, 60, 30);
     [self.view addSubview:_floatSwitch];
 
     top += 60;
 
-    // 透明度滑块
-    UILabel *lbl3 = [[UILabel alloc] initWithFrame:CGRectMake(pad, top, 200, 30)];
-    lbl3.text = @"透明度";
-    lbl3.font = [UIFont boldSystemFontOfSize:16];
-    [self.view addSubview:lbl3];
-
-    top += 30;
-
-    _slider = [[UISlider alloc] initWithFrame:CGRectMake(pad, top, w, 40)];
-    _slider.minimumValue = 0.0;
-    _slider.maximumValue = 1.0;
-    _slider.value = tabBarAlpha;
-    [_slider addTarget:self action:@selector(sliderChanged:) forControlEvents:UIControlEventValueChanged];
-    [self.view addSubview:_slider];
+    UILabel *lbl3 = (UILabel *)[self.view viewWithTag:9003];
+    if (!lbl3) {
+        lbl3 = [[UILabel alloc] init];
+        lbl3.tag = 9003;
+        lbl3.text = @"透明度";
+        lbl3.font = [UIFont boldSystemFontOfSize:16];
+        [self.view addSubview:lbl3];
+    }
+    lbl3.frame = CGRectMake(pad, top, w - pad * 2, 30);
 
     top += 40;
 
-    _alphaLabel = [[UILabel alloc] initWithFrame:CGRectMake(pad, top, w, 30)];
-    _alphaLabel.textAlignment = NSTextAlignmentCenter;
-    _alphaLabel.font = [UIFont fontWithName:@"Menlo" size:15];
-    _alphaLabel.textColor = [UIColor systemGrayColor];
-    [self.view addSubview:_alphaLabel];
+    if (!_slider) {
+        _slider = [[UISlider alloc] init];
+        _slider.minimumValue = 0.0;
+        _slider.maximumValue = 1.0;
+        _slider.value = tabBarAlpha;
+        [_slider addTarget:self action:@selector(sliderChanged:) forControlEvents:UIControlEventValueChanged];
+        [self.view addSubview:_slider];
+    }
+    _slider.frame = CGRectMake(pad, top, w - pad * 2, 40);
+
+    top += 40;
+
+    if (!_alphaLabel) {
+        _alphaLabel = [[UILabel alloc] init];
+        _alphaLabel.textAlignment = NSTextAlignmentCenter;
+        _alphaLabel.font = [UIFont fontWithName:@"Menlo" size:15];
+        _alphaLabel.textColor = [UIColor systemGrayColor];
+        [self.view addSubview:_alphaLabel];
+    }
+    _alphaLabel.frame = CGRectMake(pad, top, w - pad * 2, 30);
     [self updateAlphaLabel];
 
     // 说明
-    top += 60;
-    UILabel *hint = [[UILabel alloc] initWithFrame:CGRectMake(pad, top, w, 80)];
-    hint.text = @"💡 滑动调节底栏透明度。0% = 全透明（只剩按钮），100% = 不透明。\n开启悬浮模式后，底栏会变成一个带圆角和毛玻璃的悬浮胶囊，视觉效果更高级。";
-    hint.font = [UIFont systemFontOfSize:13];
-    hint.textColor = [UIColor systemGrayColor];
-    hint.numberOfLines = 0;
-    [self.view addSubview:hint];
+    top += 70;
+    UILabel *hint = (UILabel *)[self.view viewWithTag:9101];
+    if (!hint) {
+        hint = [[UILabel alloc] init];
+        hint.tag = 9101;
+        hint.font = [UIFont systemFontOfSize:13];
+        hint.textColor = [UIColor systemGrayColor];
+        hint.numberOfLines = 0;
+        hint.text = @"💡 滑动调节底栏透明度。0% = 全透明（只剩按钮），100% = 不透明。\n开启悬浮模式后，底栏会变成一个带圆角和毛玻璃的悬浮胶囊，视觉效果更高级。";
+        [self.view addSubview:hint];
+    }
+    CGSize hintSize = [hint sizeThatFits:CGSizeMake(w - pad * 2, 1000)];
+    hint.frame = CGRectMake(pad, top, w - pad * 2, hintSize.height);
 
     // 预览按钮
-    UIButton *preview = [UIButton buttonWithType:UIButtonTypeSystem];
-    preview.frame = CGRectMake(pad, top + 100, w, 44);
-    [preview setTitle:@"👀 实时预览效果" forState:UIControlStateNormal];
-    preview.titleLabel.font = [UIFont boldSystemFontOfSize:16];
-    preview.backgroundColor = [UIColor systemBlueColor];
-    [preview setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    preview.layer.cornerRadius = 10;
-    [preview addTarget:self action:@selector(previewNow) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:preview];
+    top += hintSize.height + 10;
+    UIButton *preview = (UIButton *)[self.view viewWithTag:9102];
+    if (!preview) {
+        preview = [UIButton buttonWithType:UIButtonTypeSystem];
+        preview.tag = 9102;
+        [preview setTitle:@"👀 实时预览效果" forState:UIControlStateNormal];
+        preview.titleLabel.font = [UIFont boldSystemFontOfSize:16];
+        preview.backgroundColor = [UIColor systemBlueColor];
+        [preview setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        preview.layer.cornerRadius = 10;
+        [preview addTarget:self action:@selector(previewNow) forControlEvents:UIControlEventTouchUpInside];
+        [self.view addSubview:preview];
+    }
+    preview.frame = CGRectMake(pad, top, w - pad * 2, 44);
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self setupUI];
 }
 
 - (void)updateAlphaLabel {
@@ -1506,12 +1561,14 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (void)mainChanged:(UISwitch *)sw {
+    NSLog(@"[TTG] 🎛️ tabbar mainChanged → on=%d", sw.on);
     tabBarTransparent = sw.on;
     TTGApplyTabBarTransparent();
     TTGShowToast(sw.on ? @"✅ 底栏透明已开启" : @"✅ 底栏已还原");
 }
 
 - (void)floatChanged:(UISwitch *)sw {
+    NSLog(@"[TTG] 🎛️ tabbar floatChanged → on=%d", sw.on);
     tabBarFloating = sw.on;
     if (!tabBarTransparent) {
         tabBarTransparent = YES;
@@ -1522,6 +1579,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (void)sliderChanged:(UISlider *)s {
+    NSLog(@"[TTG] 🎛️ sliderChanged → value=%.2f", s.value);
     tabBarAlpha = s.value;
     [self updateAlphaLabel];
     if (tabBarTransparent) TTGApplyTabBarTransparent();
@@ -1550,25 +1608,48 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     self.title = @"🔝 隐藏顶栏元素";
     self.view.backgroundColor = [UIColor systemBackgroundColor];
 
-    CGFloat pad = 20;
-    CGFloat top = 110;
-    CGFloat w = self.view.bounds.size.width - pad * 2;
+    // frame 里存的是相对偏移，viewDidLayoutSubviews 再算绝对坐标
+    [self setupUI];
+}
 
-    // 总开关
-    UILabel *lbl1 = [[UILabel alloc] initWithFrame:CGRectMake(pad, top, 250, 30)];
+- (void)setupUI {
+    // 清掉旧的（防止 viewDidLayoutSubviews 重复调用）
+    [[self.view.subviews copy] enumerateObjectsUsingBlock:^(UIView *v, NSUInteger idx, BOOL *stop) {
+        if (v.tag >= 9000) [v removeFromSuperview];
+    }];
+
+    CGFloat h = self.view.bounds.size.height;
+    CGFloat w = self.view.bounds.size.width;
+    if (w <= 0) w = [UIScreen mainScreen].bounds.size.width;
+    if (h <= 0) h = [UIScreen mainScreen].bounds.size.height;
+
+    CGFloat pad = 20;
+    CGFloat top = 120; // 避开导航栏
+    CGFloat contentW = w - pad * 2;
+
+    // 总开关 Label
+    UILabel *lbl1 = [[UILabel alloc] init];
+    lbl1.tag = 9001;
+    lbl1.frame = CGRectMake(pad, top, contentW - 80, 30);
     lbl1.text = @"启用顶栏元素隐藏";
     lbl1.font = [UIFont boldSystemFontOfSize:16];
     [self.view addSubview:lbl1];
 
-    _mainSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(w+pad-60, top, 60, 30)];
-    _mainSwitch.on = hideTopBarItems;
-    [_mainSwitch addTarget:self action:@selector(mainChanged:) forControlEvents:UIControlEventValueChanged];
+    // 总开关 UISwitch
+    if (!_mainSwitch) {
+        _mainSwitch = [[UISwitch alloc] init];
+        _mainSwitch.on = hideTopBarItems;
+        [_mainSwitch addTarget:self action:@selector(mainChanged:) forControlEvents:UIControlEventValueChanged];
+    }
+    _mainSwitch.frame = CGRectMake(w - pad - 60, top, 60, 30);
     [self.view addSubview:_mainSwitch];
 
     top += 50;
 
     // 小标题
-    UILabel *lbl2 = [[UILabel alloc] initWithFrame:CGRectMake(pad, top, w, 30)];
+    UILabel *lbl2 = [[UILabel alloc] init];
+    lbl2.tag = 9002;
+    lbl2.frame = CGRectMake(pad, top, contentW, 30);
     lbl2.text = @"选择要隐藏的元素";
     lbl2.font = [UIFont boldSystemFontOfSize:16];
     lbl2.textColor = [UIColor systemGray2Color];
@@ -1577,25 +1658,37 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     top += 30;
 
     // 数据
-    _items = @[
-        @{@"title": @"📺 推荐 / For You Tab",    @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Recommended], @"desc": @"For You / 推荐 文字 tab"},
-        @{@"title": @"👥 关注 / Following Tab",  @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Following],   @"desc": @"Following / 关注 文字 tab"},
-        @{@"title": @"🤝 好友 / Friends Tab",     @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Friends],     @"desc": @"Friends / 好友 文字 tab"},
-        @{@"title": @"🔴 LIVE 直播入口",           @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Live],         @"desc": @"LIVE / 直播 tab"},
-        @{@"title": @"➕ 中间 + 号 / 小花按钮",    @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Plus],        @"desc": @"发视频的创建按钮，默认隐藏"},
-        @{@"title": @"👤 右上角头像",              @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Avatar],      @"desc": @"头像/个人主页入口，默认隐藏"},
-        @{@"title": @"🔍 搜索按钮",                @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Search],       @"desc": @"顶栏右上角搜索图标"},
-    ];
+    if (!_items) {
+        _items = @[
+            @{@"title": @"📺 推荐 / For You Tab",    @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Recommended], @"desc": @"For You / 推荐 文字 tab"},
+            @{@"title": @"👥 关注 / Following Tab",  @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Following],   @"desc": @"Following / 关注 文字 tab"},
+            @{@"title": @"🤝 好友 / Friends Tab",     @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Friends],     @"desc": @"Friends / 好友 文字 tab"},
+            @{@"title": @"🔴 LIVE 直播入口",           @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Live],         @"desc": @"LIVE / 直播 tab"},
+            @{@"title": @"➕ 中间 + 号 / 小花按钮",    @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Plus],        @"desc": @"发视频的创建按钮，默认隐藏"},
+            @{@"title": @"👤 右上角头像",              @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Avatar],      @"desc": @"头像/个人主页入口，默认隐藏"},
+            @{@"title": @"🔍 搜索按钮",                @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Search],       @"desc": @"顶栏右上角搜索图标"},
+        ];
+    }
 
     // TableView
-    _tv = [[UITableView alloc] initWithFrame:CGRectMake(0, top, self.view.bounds.size.width, self.view.bounds.size.height - top) style:UITableViewStyleGrouped];
-    _tv.dataSource = self;
-    _tv.delegate = self;
-    _tv.backgroundColor = [UIColor systemBackgroundColor];
+    if (!_tv) {
+        _tv = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStyleGrouped];
+        _tv.dataSource = self;
+        _tv.delegate = self;
+        _tv.backgroundColor = [UIColor systemBackgroundColor];
+    }
+    _tv.frame = CGRectMake(0, top, w, h - top);
     [self.view addSubview:_tv];
 }
 
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self setupUI];
+    [_tv reloadData]; // 让 cellForRow 重新创建 switch（避免复用问题）
+}
+
 - (void)mainChanged:(UISwitch *)sw {
+    NSLog(@"[TTG] 🔝 mainChanged → on=%d", sw.on);
     hideTopBarItems = sw.on;
     TTGApplyHideTopBar();
     TTGShowToast(sw.on ? @"✅ 隐藏顶栏已开启" : @"✅ 顶栏已还原");
