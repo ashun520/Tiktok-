@@ -1385,16 +1385,12 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
         UIViewController *vc = [[cls alloc] init];
         if (!vc) { _panelShowing = NO; return; }
 
-        // 恢复 v36 的 present 方式：不做任何手势 disable/remove
-        // OverFullScreen present 应该自动把触摸路由到 presented view
-        vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
+        // 关键：用 FullScreen 而不是 OverFullScreen！
+        // OverFullScreen 会让底下 VC 继续活跃，底下的手势仍在干扰触摸
+        // FullScreen 会停止底下 VC 的触摸，presented VC 独占
+        vc.modalPresentationStyle = UIModalPresentationFullScreen;
         vc.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
-        vc.view.alpha = 0;
-        [topVC presentViewController:vc animated:NO completion:^{
-            [UIView animateWithDuration:0.2 animations:^{
-                vc.view.alpha = 1;
-            }];
-        }];
+        [topVC presentViewController:vc animated:NO completion:nil];
     }
     if (gr.state == UIGestureRecognizerStateEnded || gr.state == UIGestureRecognizerStateCancelled || gr.state == UIGestureRecognizerStateFailed) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -1921,13 +1917,13 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     NSLog(@"[TTG] 🎬 TTGSettingsViewController viewDidLoad 开始 — self=%@", self);
-    self.view.backgroundColor = [UIColor clearColor];
-    self.view.opaque = NO;
+    self.view.backgroundColor = [UIColor colorWithWhite:0.97 alpha:1];
+    self.view.opaque = YES;
 
-    // 暗色遮罩（不磨砂了，用户说太磨砂看不见字）
+    // 卡片背景覆盖全屏（因为 FullScreen present 独占屏幕）
     _dimmingView = [[UIView alloc] initWithFrame:self.view.bounds];
     _dimmingView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    _dimmingView.backgroundColor = [UIColor colorWithWhite:0 alpha:0.35];
+    _dimmingView.backgroundColor = [UIColor colorWithWhite:0.97 alpha:1];  // 实色，不再需要透明遮罩
     [self.view addSubview:_dimmingView];
 
     // 悬浮卡片（居中，不是全屏）
