@@ -1,0 +1,10 @@
+*.o
+*.bak
+*.dylib.bak
+Diag.m
+Makefile*
+Tweak.h
+Tweak.mm
+Tweak.xm.logos.mm
+icons.h
+ttgdiag.dylib
