@@ -566,8 +566,12 @@ static UIWindow *TTGFrontmostWindow(void) {
     return nil;
 }
 
+// 全局标志：我们自己的面板打开期间 → 定时器不能把手势 enable 回去
+static BOOL _ttg_gesturesSuspended = NO;
+
 // 详情页显示时 disable window 上的长按手势 → 彻底释放触摸给 switch/slider
 static void TTGSetWindowLongPressEnabled(BOOL enabled) {
+    _ttg_gesturesSuspended = !enabled;   // ← 关键！告诉定时器不要反着来
     NSArray *allWindows = nil;
     if (@available(iOS 13.0, *)) {
         NSMutableArray *ws = [NSMutableArray array];
@@ -582,12 +586,11 @@ static void TTGSetWindowLongPressEnabled(BOOL enabled) {
     }
     for (UIWindow *win in allWindows) {
         for (UIGestureRecognizer *gr in win.gestureRecognizers) {
-            // window 上只有我们的单指(TTGSinglePressRecognizer)和双指(UILongPressGestureRecognizer)
-            // 子视图上的长按已被我们 Kill 函数禁用了
             if ([gr isKindOfClass:[UILongPressGestureRecognizer class]] ||
                 [gr isKindOfClass:NSClassFromString(@"TTGSinglePressRecognizer")]) {
                 gr.enabled = enabled;
-                NSLog(@"[TTG] ✋ 手势 %@ enabled=%d", NSStringFromClass([gr class]), enabled);
+                NSLog(@"[TTG] ✋ 手势 %@ → enabled=%d (suspended=%d)",
+                      NSStringFromClass([gr class]), enabled, _ttg_gesturesSuspended);
             }
         }
     }
@@ -1371,13 +1374,17 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     }
 
     if (hasSingle && hasDouble) {
-        // 两个都在 → 确保没被 disable，然后跳过
-        for (UIGestureRecognizer *gr in win.gestureRecognizers) {
-            if ([gr isKindOfClass:[TTGSinglePressRecognizer class]]) gr.enabled = YES;
-            if ([gr isKindOfClass:[UILongPressGestureRecognizer class]] &&
-                ![gr isKindOfClass:[TTGSinglePressRecognizer class]] &&
-                ((UILongPressGestureRecognizer *)gr).numberOfTouchesRequired == 2) gr.enabled = YES;
+        // 两个都在 → 尊重全局 suspended 标志，不要强制 enable！
+        // v46 bug: 这里无条件 gr.enabled = YES 导致 TTGSetWindowLongPressEnabled(NO) 0.3s 后被翻盘！
+        if (!_ttg_gesturesSuspended) {
+            for (UIGestureRecognizer *gr in win.gestureRecognizers) {
+                if ([gr isKindOfClass:[TTGSinglePressRecognizer class]]) gr.enabled = YES;
+                if ([gr isKindOfClass:[UILongPressGestureRecognizer class]] &&
+                    ![gr isKindOfClass:[TTGSinglePressRecognizer class]] &&
+                    ((UILongPressGestureRecognizer *)gr).numberOfTouchesRequired == 2) gr.enabled = YES;
+            }
         }
+        // 如果 suspended → 什么都不做，让手势保持 disabled 状态
         return;
     }
 
