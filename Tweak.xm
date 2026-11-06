@@ -210,8 +210,18 @@ static BOOL canHideUI = YES;
 static BOOL enablePIP = YES;
 static BOOL enableBackgroundPlay = YES;
 static BOOL enableBypass = YES;
-static BOOL tabBarTransparent = NO;   // 底栏透明
-static BOOL hideTopBarItems = NO;     // 隐藏顶栏元素（小花按钮等）
+static BOOL tabBarTransparent = NO;   // 底栏透明总开关
+static CGFloat tabBarAlpha = 0.15;   // 底栏透明度（0=全透明，1=不透明）
+static BOOL tabBarFloating = NO;     // 悬浮底栏（圆角浮在底部）
+static BOOL hideTopBarItems = NO;     // 隐藏顶栏总开关
+// 顶栏元素：用户勾选要隐藏的
+static BOOL hide_Tab_Recommended = NO;  // 推荐/For You
+static BOOL hide_Tab_Following = NO;    // 关注/Following
+static BOOL hide_Tab_Friends = NO;      // 好友/Friends
+static BOOL hide_Tab_Live = NO;         // LIVE
+static BOOL hide_Tab_Plus = YES;        // 中间 + 号（默认隐藏，省空间）
+static BOOL hide_Tab_Avatar = YES;      // 头像（默认隐藏）
+static BOOL hide_Tab_Search = NO;       // 🔍 搜索
 
 #pragma mark - 地区切换（国家码 → mcc/mnc/iso/language/emoji）
 
@@ -330,7 +340,7 @@ static void TTGApplyTabBarTransparentToView(UIView *v) {
         UITabBar *tabBar = (UITabBar *)v;
         if (tabBarTransparent) {
             tabBar.backgroundColor = [UIColor clearColor];
-            tabBar.alpha = 0.15; // 几乎透明但按钮还能看见一点点
+            tabBar.alpha = tabBarAlpha; // 用户可调
             tabBar.layer.borderWidth = 0;
             tabBar.layer.shadowOpacity = 0;
             if (@available(iOS 13.0, *)) {
@@ -338,15 +348,50 @@ static void TTGApplyTabBarTransparentToView(UIView *v) {
                 [app configureWithTransparentBackground];
                 app.backgroundColor = [UIColor clearColor];
                 app.shadowColor = [UIColor clearColor];
-                // 同时设置 standardAppearance 和 scrollEdgeAppearance
                 [tabBar setStandardAppearance:app];
                 if (@available(iOS 15.0, *)) { [tabBar setScrollEdgeAppearance:app]; }
             }
+            // 悬浮模式：缩窄 + 圆角 + 上移
+            if (tabBarFloating) {
+                CGRect f = tabBar.frame;
+                CGFloat margin = 20;
+                f.origin.x += margin;
+                f.size.width -= margin * 2;
+                f.origin.y -= 8; // 稍微上浮
+                tabBar.frame = f;
+                tabBar.layer.cornerRadius = 20;
+                tabBar.layer.masksToBounds = YES;
+                tabBar.layer.shadowColor = [UIColor blackColor].CGColor;
+                tabBar.layer.shadowOpacity = 0.3;
+                tabBar.layer.shadowOffset = CGSizeMake(0, 4);
+                tabBar.layer.shadowRadius = 10;
+                tabBar.layer.masksToBounds = NO;
+                // 用一个模糊背景
+                UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
+                UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blur];
+                blurView.frame = tabBar.bounds;
+                blurView.layer.cornerRadius = 20;
+                blurView.layer.masksToBounds = YES;
+                blurView.tag = 99999;
+                [tabBar insertSubview:blurView atIndex:0];
+            }
         } else {
             tabBar.alpha = 1.0;
+            // 还原 frame
+            if (tabBarFloating) {
+                CGRect f = tabBar.frame;
+                f.origin.x = 0;
+                f.size.width = tabBar.superview.bounds.size.width;
+                f.origin.y += 8;
+                tabBar.frame = f;
+                tabBar.layer.cornerRadius = 0;
+                tabBar.layer.shadowOpacity = 0;
+                UIView *old = [tabBar viewWithTag:99999];
+                if (old) [old removeFromSuperview];
+            }
         }
     }
-    // TikTok 自定义底栏：包含 "tabbar" / "bottom" / "homebar" / "TTBar" 的
+    // TikTok 自定义底栏：包含 tabbar/bottombar/homebar/TTBar 的
     NSString *clsName = NSStringFromClass([v class]);
     if (tabBarTransparent && (
         [clsName caseInsensitiveCompare:@"TTTabBar"] == NSOrderedSame ||
@@ -354,7 +399,7 @@ static void TTGApplyTabBarTransparentToView(UIView *v) {
         [clsName rangeOfString:@"bottombar" options:NSCaseInsensitiveSearch].location != NSNotFound ||
         [clsName rangeOfString:@"homebar" options:NSCaseInsensitiveSearch].location != NSNotFound
     )) {
-        v.alpha = 0.15;
+        v.alpha = tabBarAlpha;
     }
     for (UIView *sub in v.subviews) {
         TTGApplyTabBarTransparentToView(sub);
@@ -378,44 +423,64 @@ static void TTGApplyHideTopBar(void) {
 static void TTGScanTopBarItems(UIView *v) {
     NSString *clsName = NSStringFromClass([v class]);
     NSString *viewID = v.accessibilityIdentifier ?: @"";
+    NSString *label = v.accessibilityLabel ?: @"";
+    NSString *text = ([v respondsToSelector:@selector(text)] && [(id)v text]) ? [(id)v text] : @"";
 
+    // + 号/小花按钮（中间的创建按钮）
+    BOOL isPlus =
+        hide_Tab_Plus && (
+        [clsName rangeOfString:@"addbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [clsName rangeOfString:@"createbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [clsName rangeOfString:@"plusbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [clsName rangeOfString:@"flower" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [clsName rangeOfString:@"doodle" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [viewID rangeOfString:@"add" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [viewID rangeOfString:@"create" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [viewID rangeOfString:@"plus" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [viewID rangeOfString:@"flower" options:NSCaseInsensitiveSearch].location != NSNotFound);
+
+    // 头像按钮
+    BOOL isAvatar =
+        hide_Tab_Avatar && (
+        [clsName rangeOfString:@"avatarbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [clsName rangeOfString:@"avatarcontainer" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [clsName rangeOfString:@"profilebutton" options:NSCaseInsensitiveSearch].location != NSNotFound);
+
+    // 搜索按钮 🔍
+    BOOL isSearch =
+        hide_Tab_Search && (
+        [clsName rangeOfString:@"searchbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [clsName rangeOfString:@"searchicon" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [viewID rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [label rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound);
+
+    // Tab 文字匹配（For You/Recommended/Following/Friends/Live/社区/东京都）
+    BOOL isTab = NO;
     if (hideTopBarItems) {
-        // 小花按钮（TikTok 的 "Add" / "Create" / "Plus" 按钮）
-        BOOL isFlowerBtn =
-            [clsName rangeOfString:@"addbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [clsName rangeOfString:@"createbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [clsName rangeOfString:@"plusbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [clsName rangeOfString:@"flower" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [clsName rangeOfString:@"doodle" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [viewID rangeOfString:@"add" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [viewID rangeOfString:@"create" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [viewID rangeOfString:@"plus" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [viewID rangeOfString:@"flower" options:NSCaseInsensitiveSearch].location != NSNotFound;
-
-        // 头像按钮（右上角头像）
-        BOOL isAvatarBtn =
-            [clsName rangeOfString:@"avatarbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [clsName rangeOfString:@"avatarcontainer" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [clsName rangeOfString:@"profilebutton" options:NSCaseInsensitiveSearch].location != NSNotFound;
-
-        if (isFlowerBtn || isAvatarBtn) {
-            v.hidden = YES;
-        }
-    } else {
-        // 关闭：恢复
-        if (v.hidden && (
-            [clsName rangeOfString:@"addbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [clsName rangeOfString:@"createbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [clsName rangeOfString:@"plusbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [clsName rangeOfString:@"flower" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [clsName rangeOfString:@"doodle" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [clsName rangeOfString:@"avatarbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [clsName rangeOfString:@"avatarcontainer" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-            [clsName rangeOfString:@"profilebutton" options:NSCaseInsensitiveSearch].location != NSNotFound
-        )) {
-            v.hidden = NO;
-        }
+        if (hide_Tab_Recommended && (
+            [text caseInsensitiveCompare:@"For You"] == NSOrderedSame ||
+            [text caseInsensitiveCompare:@"Recommended"] == NSOrderedSame ||
+            [text isEqualToString:@"推荐"] ||
+            [text isEqualToString:@"推荐"])) isTab = YES;
+        if (hide_Tab_Following && (
+            [text caseInsensitiveCompare:@"Following"] == NSOrderedSame ||
+            [text isEqualToString:@"关注"])) isTab = YES;
+        if (hide_Tab_Friends && (
+            [text caseInsensitiveCompare:@"Friends"] == NSOrderedSame ||
+            [text isEqualToString:@"好友"])) isTab = YES;
+        if (hide_Tab_Live && (
+            [text caseInsensitiveCompare:@"LIVE"] == NSOrderedSame ||
+            [text caseInsensitiveCompare:@"Live"] == NSOrderedSame ||
+            [text caseInsensitiveCompare:@"live"] == NSOrderedSame ||
+            [text isEqualToString:@"直播"])) isTab = YES;
     }
+
+    if ((isPlus || isAvatar || isSearch || isTab) && hideTopBarItems) {
+        v.hidden = YES;
+    } else if (!hideTopBarItems) {
+        v.hidden = NO; // 总开关关掉 → 全部恢复
+    }
+
     for (UIView *sub in v.subviews) {
         TTGScanTopBarItems(sub);
     }
@@ -1336,6 +1401,257 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 
 @end
 
+#pragma mark - 底栏设置详情页（滑块 + 悬浮）
+
+@interface TTGTabBarSettingsViewController : UIViewController
+@end
+
+@implementation TTGTabBarSettingsViewController {
+    UISwitch *_mainSwitch;
+    UISwitch *_floatSwitch;
+    UISlider *_slider;
+    UILabel *_alphaLabel;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"🎛️ 底栏设置";
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
+
+    CGFloat top = 120;
+    CGFloat pad = 20;
+    CGFloat w = self.view.bounds.size.width - pad * 2;
+
+    // 总开关
+    UILabel *lbl1 = [[UILabel alloc] initWithFrame:CGRectMake(pad, top, 200, 30)];
+    lbl1.text = @"启用底栏设置";
+    lbl1.font = [UIFont boldSystemFontOfSize:16];
+    [self.view addSubview:lbl1];
+
+    _mainSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(w+pad-60, top, 60, 30)];
+    _mainSwitch.on = tabBarTransparent;
+    [_mainSwitch addTarget:self action:@selector(mainChanged:) forControlEvents:UIControlEventValueChanged];
+    [self.view addSubview:_mainSwitch];
+
+    top += 50;
+
+    // 悬浮模式
+    UILabel *lbl2 = [[UILabel alloc] initWithFrame:CGRectMake(pad, top, 200, 30)];
+    lbl2.text = @"🧊 悬浮底栏（圆角+阴影+毛玻璃）";
+    lbl2.font = [UIFont systemFontOfSize:15];
+    [self.view addSubview:lbl2];
+
+    _floatSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(w+pad-60, top, 60, 30)];
+    _floatSwitch.on = tabBarFloating;
+    [_floatSwitch addTarget:self action:@selector(floatChanged:) forControlEvents:UIControlEventValueChanged];
+    [self.view addSubview:_floatSwitch];
+
+    top += 60;
+
+    // 透明度滑块
+    UILabel *lbl3 = [[UILabel alloc] initWithFrame:CGRectMake(pad, top, 200, 30)];
+    lbl3.text = @"透明度";
+    lbl3.font = [UIFont boldSystemFontOfSize:16];
+    [self.view addSubview:lbl3];
+
+    top += 30;
+
+    _slider = [[UISlider alloc] initWithFrame:CGRectMake(pad, top, w, 40)];
+    _slider.minimumValue = 0.0;
+    _slider.maximumValue = 1.0;
+    _slider.value = tabBarAlpha;
+    [_slider addTarget:self action:@selector(sliderChanged:) forControlEvents:UIControlEventValueChanged];
+    [self.view addSubview:_slider];
+
+    top += 40;
+
+    _alphaLabel = [[UILabel alloc] initWithFrame:CGRectMake(pad, top, w, 30)];
+    _alphaLabel.textAlignment = NSTextAlignmentCenter;
+    _alphaLabel.font = [UIFont fontWithName:@"Menlo" size:15];
+    _alphaLabel.textColor = [UIColor systemGrayColor];
+    [self.view addSubview:_alphaLabel];
+    [self updateAlphaLabel];
+
+    // 说明
+    top += 60;
+    UILabel *hint = [[UILabel alloc] initWithFrame:CGRectMake(pad, top, w, 80)];
+    hint.text = @"💡 滑动调节底栏透明度。0% = 全透明（只剩按钮），100% = 不透明。\n开启悬浮模式后，底栏会变成一个带圆角和毛玻璃的悬浮胶囊，视觉效果更高级。";
+    hint.font = [UIFont systemFontOfSize:13];
+    hint.textColor = [UIColor systemGrayColor];
+    hint.numberOfLines = 0;
+    [self.view addSubview:hint];
+
+    // 预览按钮
+    UIButton *preview = [UIButton buttonWithType:UIButtonTypeSystem];
+    preview.frame = CGRectMake(pad, top + 100, w, 44);
+    [preview setTitle:@"👀 实时预览效果" forState:UIControlStateNormal];
+    preview.titleLabel.font = [UIFont boldSystemFontOfSize:16];
+    preview.backgroundColor = [UIColor systemBlueColor];
+    [preview setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    preview.layer.cornerRadius = 10;
+    [preview addTarget:self action:@selector(previewNow) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:preview];
+}
+
+- (void)updateAlphaLabel {
+    if (!_alphaLabel) return;
+    int pct = (int)(_slider.value * 100);
+    NSString *desc;
+    if (pct <= 10) desc = @"几乎全透明";
+    else if (pct <= 30) desc = @"极透明（推荐）";
+    else if (pct <= 50) desc = @"半透明";
+    else if (pct <= 80) desc = @"较实";
+    else desc = @"接近不透明";
+    _alphaLabel.text = [NSString stringWithFormat:@"%d%% — %@", pct, desc];
+}
+
+- (void)mainChanged:(UISwitch *)sw {
+    tabBarTransparent = sw.on;
+    TTGApplyTabBarTransparent();
+    TTGShowToast(sw.on ? @"✅ 底栏透明已开启" : @"✅ 底栏已还原");
+}
+
+- (void)floatChanged:(UISwitch *)sw {
+    tabBarFloating = sw.on;
+    if (!tabBarTransparent) {
+        tabBarTransparent = YES;
+        _mainSwitch.on = YES;
+    }
+    TTGApplyTabBarTransparent();
+    TTGShowToast(sw.on ? @"🧊 悬浮模式已开启" : @"🧊 悬浮模式已关闭");
+}
+
+- (void)sliderChanged:(UISlider *)s {
+    tabBarAlpha = s.value;
+    [self updateAlphaLabel];
+    if (tabBarTransparent) TTGApplyTabBarTransparent();
+}
+
+- (void)previewNow {
+    TTGApplyTabBarTransparent();
+    TTGShowToast(@"👀 已应用，去 TikTok 主界面看效果");
+}
+
+@end
+
+#pragma mark - 隐藏顶栏元素详情页（checklist）
+
+@interface TTGTopBarSettingsViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@end
+
+@implementation TTGTopBarSettingsViewController {
+    UISwitch *_mainSwitch;
+    UITableView *_tv;
+    NSArray *_items; // @[@{title, ptr:BOOL*, desc}]
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"🔝 隐藏顶栏元素";
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
+
+    CGFloat pad = 20;
+    CGFloat top = 110;
+    CGFloat w = self.view.bounds.size.width - pad * 2;
+
+    // 总开关
+    UILabel *lbl1 = [[UILabel alloc] initWithFrame:CGRectMake(pad, top, 250, 30)];
+    lbl1.text = @"启用顶栏元素隐藏";
+    lbl1.font = [UIFont boldSystemFontOfSize:16];
+    [self.view addSubview:lbl1];
+
+    _mainSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(w+pad-60, top, 60, 30)];
+    _mainSwitch.on = hideTopBarItems;
+    [_mainSwitch addTarget:self action:@selector(mainChanged:) forControlEvents:UIControlEventValueChanged];
+    [self.view addSubview:_mainSwitch];
+
+    top += 50;
+
+    // 小标题
+    UILabel *lbl2 = [[UILabel alloc] initWithFrame:CGRectMake(pad, top, w, 30)];
+    lbl2.text = @"选择要隐藏的元素";
+    lbl2.font = [UIFont boldSystemFontOfSize:16];
+    lbl2.textColor = [UIColor systemGray2Color];
+    [self.view addSubview:lbl2];
+
+    top += 30;
+
+    // 数据
+    _items = @[
+        @{@"title": @"📺 推荐 / For You Tab",    @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Recommended], @"desc": @"For You / 推荐 文字 tab"},
+        @{@"title": @"👥 关注 / Following Tab",  @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Following],   @"desc": @"Following / 关注 文字 tab"},
+        @{@"title": @"🤝 好友 / Friends Tab",     @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Friends],     @"desc": @"Friends / 好友 文字 tab"},
+        @{@"title": @"🔴 LIVE 直播入口",           @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Live],         @"desc": @"LIVE / 直播 tab"},
+        @{@"title": @"➕ 中间 + 号 / 小花按钮",    @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Plus],        @"desc": @"发视频的创建按钮，默认隐藏"},
+        @{@"title": @"👤 右上角头像",              @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Avatar],      @"desc": @"头像/个人主页入口，默认隐藏"},
+        @{@"title": @"🔍 搜索按钮",                @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Search],       @"desc": @"顶栏右上角搜索图标"},
+    ];
+
+    // TableView
+    _tv = [[UITableView alloc] initWithFrame:CGRectMake(0, top, self.view.bounds.size.width, self.view.bounds.size.height - top) style:UITableViewStyleGrouped];
+    _tv.dataSource = self;
+    _tv.delegate = self;
+    _tv.backgroundColor = [UIColor systemBackgroundColor];
+    [self.view addSubview:_tv];
+}
+
+- (void)mainChanged:(UISwitch *)sw {
+    hideTopBarItems = sw.on;
+    TTGApplyHideTopBar();
+    TTGShowToast(sw.on ? @"✅ 隐藏顶栏已开启" : @"✅ 顶栏已还原");
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return _items.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *ReuseId = @"topbarcell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:ReuseId];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:ReuseId];
+    }
+    NSDictionary *it = _items[indexPath.row];
+    cell.textLabel.text = it[@"title"];
+    cell.textLabel.font = [UIFont systemFontOfSize:15];
+    cell.detailTextLabel.text = it[@"desc"];
+    cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
+    cell.detailTextLabel.textColor = [UIColor systemGrayColor];
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+
+    BOOL *flag = (BOOL *)[(NSValue *)it[@"ptr"] pointerValue];
+    UISwitch *sw = [[UISwitch alloc] init];
+    sw.on = flag ? *flag : NO;
+    if (@available(iOS 13.0, *)) sw.onTintColor = [UIColor systemGreenColor];
+    sw.tag = indexPath.row;
+    [sw addTarget:self action:@selector(itemToggled:) forControlEvents:UIControlEventValueChanged];
+    cell.accessoryView = sw;
+    return cell;
+}
+
+- (void)itemToggled:(UISwitch *)sw {
+    if (sw.tag < 0 || sw.tag >= (int)_items.count) return;
+    NSDictionary *it = _items[sw.tag];
+    BOOL *flag = (BOOL *)[(NSValue *)it[@"ptr"] pointerValue];
+    if (flag) *flag = sw.isOn;
+    // 至少勾了一个 → 自动开总开关
+    BOOL any = NO;
+    for (NSDictionary *d in _items) {
+        BOOL *f = (BOOL *)[(NSValue *)d[@"ptr"] pointerValue];
+        if (f && *f) { any = YES; break; }
+    }
+    if (any && !hideTopBarItems) {
+        hideTopBarItems = YES;
+        _mainSwitch.on = YES;
+    } else if (!any && hideTopBarItems) {
+        hideTopBarItems = NO;
+        _mainSwitch.on = NO;
+    }
+    TTGApplyHideTopBar();
+}
+
+@end
+
 #pragma mark - 设置页（液态玻璃）
 
 @interface TTGSettingsViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
@@ -1425,8 +1741,8 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     [rows addObject:@{@"title": @"画中画（PiP）", @"ptr": [NSValue valueWithPointer:(const void *)&enablePIP]}];
     [rows addObject:@{@"title": @"后台继续播放",   @"ptr": [NSValue valueWithPointer:(const void *)&enableBackgroundPlay]}];
     [rows addObject:@{@"title": @"安全检测绕过",   @"ptr": [NSValue valueWithPointer:(const void *)&enableBypass]}];
-    [rows addObject:@{@"title": @"🎛️ 底栏透明",    @"ptr": [NSValue valueWithPointer:(const void *)&tabBarTransparent]}];
-    [rows addObject:@{@"title": @"🔝 隐藏顶栏元素", @"ptr": [NSValue valueWithPointer:(const void *)&hideTopBarItems]}];
+    [rows addObject:@{@"title": @"🎛️ 底栏设置",    @"action": @"tabbar"}];      // 点击进详情（滑块+悬浮）
+    [rows addObject:@{@"title": @"🔝 隐藏顶栏元素", @"action": @"topbar"}];      // 点击进详情（子选项）
     _rows = rows;
 
     // TableView
@@ -1525,7 +1841,14 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (void)toggleAllOn {
-    noads = downloadWithoutWatermark = autoPlayNextVideo = showProgressBar = canHideUI = enablePIP = enableBackgroundPlay = enableBypass = tabBarTransparent = hideTopBarItems = YES;
+    noads = downloadWithoutWatermark = autoPlayNextVideo = showProgressBar = canHideUI = enablePIP = enableBackgroundPlay = enableBypass = YES;
+    // 子项默认：隐藏 + 号和头像
+    hide_Tab_Plus = YES;
+    hide_Tab_Avatar = YES;
+    hideTopBarItems = YES;
+    tabBarTransparent = YES;
+    tabBarAlpha = 0.15;
+    tabBarFloating = NO;
     TTGApplyTabBarTransparent();
     TTGApplyHideTopBar();
     [_tableView reloadData];
@@ -1550,13 +1873,35 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     cell.textLabel.textColor = [UIColor colorWithWhite:0 alpha:0.85];
 
     if (row[@"action"]) {
-        // Action 行：显示当前地区名 + 右箭头
+        // Action 行
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         cell.accessoryView = nil;
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-        cell.detailTextLabel.text = TTGRegionDisplayName();
         cell.detailTextLabel.font = [UIFont systemFontOfSize:13];
         cell.detailTextLabel.textColor = [UIColor colorWithWhite:0 alpha:0.5];
+
+        if ([row[@"action"] isEqualToString:@"region"]) {
+            cell.detailTextLabel.text = TTGRegionDisplayName();
+        } else if ([row[@"action"] isEqualToString:@"tabbar"]) {
+            if (tabBarTransparent) {
+                NSString *alphaStr = [NSString stringWithFormat:@"%.0f%%", tabBarAlpha * 100];
+                cell.detailTextLabel.text = tabBarFloating ? [NSString stringWithFormat:@"🧊 悬浮 %@", alphaStr] : alphaStr;
+            } else {
+                cell.detailTextLabel.text = @"关闭";
+            }
+        } else if ([row[@"action"] isEqualToString:@"topbar"]) {
+            int count = 0;
+            if (hide_Tab_Recommended) count++;
+            if (hide_Tab_Following) count++;
+            if (hide_Tab_Friends) count++;
+            if (hide_Tab_Live) count++;
+            if (hide_Tab_Plus) count++;
+            if (hide_Tab_Avatar) count++;
+            if (hide_Tab_Search) count++;
+            cell.detailTextLabel.text = count > 0 ? [NSString stringWithFormat:@"已隐藏 %d 项", count] : @"关闭";
+        } else {
+            cell.detailTextLabel.text = nil;
+        }
     } else {
         // Switch 行
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -1584,17 +1929,25 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     NSDictionary *row = _rows[indexPath.row];
-    if ([row[@"action"] isEqualToString:@"region"]) {
-        // 打开地区选择页（包在 UINavigationController 里 push）
+    NSString *action = row[@"action"];
+    if ([action isEqualToString:@"region"]) {
         TTGRegionPickerViewController *picker = [[TTGRegionPickerViewController alloc] init];
         UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:picker];
         nav.navigationBar.tintColor = [UIColor systemBlueColor];
         [self presentViewController:nav animated:YES completion:nil];
-
-        // 等用户选完 → 刷新 cell 的 detailTextLabel
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self->_tableView reloadData];
         });
+    } else if ([action isEqualToString:@"tabbar"]) {
+        TTGTabBarSettingsViewController *vc = [[TTGTabBarSettingsViewController alloc] init];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+        nav.navigationBar.tintColor = [UIColor systemBlueColor];
+        [self presentViewController:nav animated:YES completion:nil];
+    } else if ([action isEqualToString:@"topbar"]) {
+        TTGTopBarSettingsViewController *vc = [[TTGTopBarSettingsViewController alloc] init];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+        nav.navigationBar.tintColor = [UIColor systemBlueColor];
+        [self presentViewController:nav animated:YES completion:nil];
     }
 }
 
