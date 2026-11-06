@@ -466,14 +466,14 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
             self.layer.shadowOffset = CGSizeMake(0, 4);
             self.layer.shadowRadius = 12;
             if (@available(iOS 13.0, *)) {
-                UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialLight];
+                UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
                 UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blur];
                 blurView.frame = self.bounds;
                 blurView.layer.cornerRadius = frame.size.width / 2;
                 blurView.clipsToBounds = YES;
                 blurView.userInteractionEnabled = NO;
                 UIView *tint = [[UIView alloc] initWithFrame:self.bounds];
-                tint.backgroundColor = [UIColor colorWithWhite:1 alpha:0.18];
+                tint.backgroundColor = [UIColor colorWithWhite:0 alpha:0.08];
                 tint.layer.cornerRadius = frame.size.width / 2;
                 tint.userInteractionEnabled = NO;
                 [blurView.contentView addSubview:tint];
@@ -481,7 +481,7 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
                 UIImage *img = [UIImage systemImageNamed:@"arrow.down"];
                 UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightSemibold];
                 [self setImage:[img imageWithConfiguration:cfg] forState:UIControlStateNormal];
-                [self setTintColor:[UIColor colorWithWhite:0 alpha:0.7]];
+                [self setTintColor:[UIColor colorWithWhite:0 alpha:0.88]];
             } else {
                 [self setTitle:@"↓" forState:UIControlStateNormal];
                 [self setTitleColor:[UIColor colorWithWhite:0 alpha:0.8] forState:UIControlStateNormal];
@@ -589,7 +589,7 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
     [self.view addSubview:_card];
     // 磨砂背景层（加在 card 最底层，子视图会自动在它上面）
     UIBlurEffectStyle bstyle;
-    if (@available(iOS 13.0, *)) bstyle = UIBlurEffectStyleSystemMaterialLight;
+    if (@available(iOS 13.0, *)) bstyle = UIBlurEffectStyleSystemMaterial;
     else bstyle = UIBlurEffectStyleLight;
     UIBlurEffect *be = [UIBlurEffect effectWithStyle:bstyle];
     UIVisualEffectView *bvg = [[UIVisualEffectView alloc] initWithEffect:be];
@@ -597,7 +597,7 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
     bvg.layer.cornerRadius = 22;
     bvg.clipsToBounds = YES;
     UIView *cardTint = [[UIView alloc] init];
-    cardTint.backgroundColor = [UIColor colorWithWhite:1 alpha:0.12];
+    cardTint.backgroundColor = [UIColor colorWithWhite:0 alpha:0.06];
     cardTint.tag = 998;
     [_card addSubview:bvg];
     [_card addSubview:cardTint];
