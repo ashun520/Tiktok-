@@ -210,6 +210,8 @@ static BOOL canHideUI = YES;
 static BOOL enablePIP = YES;
 static BOOL enableBackgroundPlay = YES;
 static BOOL enableBypass = YES;
+static BOOL tabBarTransparent = NO;   // 底栏透明
+static BOOL hideTopBarItems = NO;     // 隐藏顶栏元素（小花按钮等）
 
 #pragma mark - 地区切换（国家码 → mcc/mnc/iso/language/emoji）
 
@@ -303,6 +305,120 @@ static void TTGApplyRegionChange(void) {
     } forKey:@"NSGlobalDomain"];
 
     NSLog(@"[TTG] ✅ 地区切换完成");
+}
+
+#pragma mark - 底栏透明
+
+static UIWindow *TTGFrontmostWindow(void);
+static void TTGApplyTabBarTransparentToView(UIView *v);
+static void TTGScanTopBarItems(UIView *v);
+
+static void TTGApplyTabBarTransparent(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *win = TTGFrontmostWindow();
+        if (!win) return;
+        for (UIView *v in win.subviews) {
+            TTGApplyTabBarTransparentToView(v);
+        }
+        NSLog(@"[TTG] 🎛️ 底栏透明 %@", tabBarTransparent ? @"开启" : @"关闭");
+    });
+}
+
+static void TTGApplyTabBarTransparentToView(UIView *v) {
+    // UITabBar（系统类）
+    if ([v isKindOfClass:[UITabBar class]]) {
+        UITabBar *tabBar = (UITabBar *)v;
+        if (tabBarTransparent) {
+            tabBar.backgroundColor = [UIColor clearColor];
+            tabBar.alpha = 0.15; // 几乎透明但按钮还能看见一点点
+            tabBar.layer.borderWidth = 0;
+            tabBar.layer.shadowOpacity = 0;
+            if (@available(iOS 13.0, *)) {
+                UITabBarAppearance *app = [[UITabBarAppearance alloc] init];
+                [app configureWithTransparentBackground];
+                app.backgroundColor = [UIColor clearColor];
+                app.shadowColor = [UIColor clearColor];
+                // 同时设置 standardAppearance 和 scrollEdgeAppearance
+                [tabBar setStandardAppearance:app];
+                if (@available(iOS 15.0, *)) { [tabBar setScrollEdgeAppearance:app]; }
+            }
+        } else {
+            tabBar.alpha = 1.0;
+        }
+    }
+    // TikTok 自定义底栏：包含 "tabbar" / "bottom" / "homebar" / "TTBar" 的
+    NSString *clsName = NSStringFromClass([v class]);
+    if (tabBarTransparent && (
+        [clsName caseInsensitiveCompare:@"TTTabBar"] == NSOrderedSame ||
+        [clsName rangeOfString:@"tabbar" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [clsName rangeOfString:@"bottombar" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [clsName rangeOfString:@"homebar" options:NSCaseInsensitiveSearch].location != NSNotFound
+    )) {
+        v.alpha = 0.15;
+    }
+    for (UIView *sub in v.subviews) {
+        TTGApplyTabBarTransparentToView(sub);
+    }
+}
+
+#pragma mark - 隐藏顶栏元素
+
+// 递归找并隐藏顶栏上的小花按钮、"+" 号按钮等干扰元素
+static void TTGApplyHideTopBar(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *win = TTGFrontmostWindow();
+        if (!win) return;
+        for (UIView *v in win.subviews) {
+            TTGScanTopBarItems(v);
+        }
+        NSLog(@"[TTG] 🔝 隐藏顶栏元素 %@", hideTopBarItems ? @"开启" : @"关闭");
+    });
+}
+
+static void TTGScanTopBarItems(UIView *v) {
+    NSString *clsName = NSStringFromClass([v class]);
+    NSString *viewID = v.accessibilityIdentifier ?: @"";
+
+    if (hideTopBarItems) {
+        // 小花按钮（TikTok 的 "Add" / "Create" / "Plus" 按钮）
+        BOOL isFlowerBtn =
+            [clsName rangeOfString:@"addbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [clsName rangeOfString:@"createbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [clsName rangeOfString:@"plusbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [clsName rangeOfString:@"flower" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [clsName rangeOfString:@"doodle" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [viewID rangeOfString:@"add" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [viewID rangeOfString:@"create" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [viewID rangeOfString:@"plus" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [viewID rangeOfString:@"flower" options:NSCaseInsensitiveSearch].location != NSNotFound;
+
+        // 头像按钮（右上角头像）
+        BOOL isAvatarBtn =
+            [clsName rangeOfString:@"avatarbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [clsName rangeOfString:@"avatarcontainer" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [clsName rangeOfString:@"profilebutton" options:NSCaseInsensitiveSearch].location != NSNotFound;
+
+        if (isFlowerBtn || isAvatarBtn) {
+            v.hidden = YES;
+        }
+    } else {
+        // 关闭：恢复
+        if (v.hidden && (
+            [clsName rangeOfString:@"addbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [clsName rangeOfString:@"createbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [clsName rangeOfString:@"plusbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [clsName rangeOfString:@"flower" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [clsName rangeOfString:@"doodle" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [clsName rangeOfString:@"avatarbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [clsName rangeOfString:@"avatarcontainer" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+            [clsName rangeOfString:@"profilebutton" options:NSCaseInsensitiveSearch].location != NSNotFound
+        )) {
+            v.hidden = NO;
+        }
+    }
+    for (UIView *sub in v.subviews) {
+        TTGScanTopBarItems(sub);
+    }
 }
 
 #pragma mark - 工具
@@ -1309,6 +1425,8 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     [rows addObject:@{@"title": @"画中画（PiP）", @"ptr": [NSValue valueWithPointer:(const void *)&enablePIP]}];
     [rows addObject:@{@"title": @"后台继续播放",   @"ptr": [NSValue valueWithPointer:(const void *)&enableBackgroundPlay]}];
     [rows addObject:@{@"title": @"安全检测绕过",   @"ptr": [NSValue valueWithPointer:(const void *)&enableBypass]}];
+    [rows addObject:@{@"title": @"🎛️ 底栏透明",    @"ptr": [NSValue valueWithPointer:(const void *)&tabBarTransparent]}];
+    [rows addObject:@{@"title": @"🔝 隐藏顶栏元素", @"ptr": [NSValue valueWithPointer:(const void *)&hideTopBarItems]}];
     _rows = rows;
 
     // TableView
@@ -1407,7 +1525,9 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (void)toggleAllOn {
-    noads = downloadWithoutWatermark = autoPlayNextVideo = showProgressBar = canHideUI = enablePIP = enableBackgroundPlay = enableBypass = YES;
+    noads = downloadWithoutWatermark = autoPlayNextVideo = showProgressBar = canHideUI = enablePIP = enableBackgroundPlay = enableBypass = tabBarTransparent = hideTopBarItems = YES;
+    TTGApplyTabBarTransparent();
+    TTGApplyHideTopBar();
     [_tableView reloadData];
     TTGShowToast(@"✅ 所有功能已开启");
 }
@@ -1488,6 +1608,13 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     NSDictionary *row = _rows[sw.tag];
     BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
     if (flag) *flag = sw.isOn;
+
+    // 立即应用
+    if (flag == &tabBarTransparent) {
+        TTGApplyTabBarTransparent();
+    } else if (flag == &hideTopBarItems) {
+        TTGApplyHideTopBar();
+    }
 }
 
 - (UIStatusBarStyle)preferredStatusBarStyle {
@@ -2002,6 +2129,10 @@ __attribute__((constructor)) static void TTGInit(void) {
                     }
                     // 2. 持续禁用所有子视图的长按手势（防止 TikTok 动态添加）
                     TTGDisableAllChildLongPresses();
+                    // 3. 底栏透明保持
+                    if (tabBarTransparent) TTGApplyTabBarTransparent();
+                    // 4. 隐藏顶栏元素保持
+                    if (hideTopBarItems) TTGApplyHideTopBar();
                 } @catch (NSException *e) {
                     NSLog(@"[TTG] poll err: %@", e);
                 }
