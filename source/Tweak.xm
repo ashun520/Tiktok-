@@ -4,9 +4,6 @@
 #import <Photos/Photos.h>
 #import <objc/message.h>
 
-@interface TTGSettingsViewController : UITableViewController
-@end
-
 #pragma mark - 全局开关
 
 static BOOL noads = YES;
@@ -479,7 +476,9 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
 }
 
 - (void)ttgShowSettings {
-    UIViewController *vc = [[TTGSettingsViewController alloc] init];
+    TTGSettingsViewController *vc = [[TTGSettingsViewController alloc] init];
+    vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
+    vc.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
     UIViewController *top = TTGTopVC();
     if (!top) return;
     [top presentViewController:vc animated:YES completion:nil];
@@ -487,22 +486,87 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
 
 @end
 
-#pragma mark - 设置页 TableViewController
+#pragma mark - 设置页（液态玻璃）
+
+@interface TTGSettingsViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@end
 
 @implementation TTGSettingsViewController {
-    NSArray *_rows;   // @[@{@"title":..., @"key":..., @"ptr": &flag}]
+    NSArray *_rows;
+    UITableView *_tableView;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"TikTok God 设置";
-    if (@available(iOS 13.0, *)) {
-        self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
-    } else {
-        self.view.backgroundColor = [UIColor groupTableViewBackgroundColor];
-    }
-    self.tableView.tableFooterView = [[UIView alloc] init];
+    self.view.backgroundColor = [UIColor clearColor];
+    self.view.opaque = NO;
 
+    // 背景：半透明黑色 + 磨砂玻璃
+    UIView *bg = [[UIView alloc] initWithFrame:self.view.bounds];
+    bg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    bg.backgroundColor = [UIColor colorWithWhite:0 alpha:0.4];
+    [self.view addSubview:bg];
+
+    // 磨砂玻璃层（液态玻璃）
+    UIBlurEffectStyle blurStyle;
+    if (@available(iOS 13.0, *)) {
+        blurStyle = UIBlurEffectStyleSystemMaterial;
+    } else {
+        blurStyle = UIBlurEffectStyleLight;
+    }
+    UIBlurEffect *blur = [UIBlurEffect effectWithStyle:blurStyle];
+    UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blur];
+    blurView.frame = self.view.bounds;
+    blurView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    blurView.alpha = 0.92;
+    [self.view addSubview:blurView];
+
+    // 顶部大标题
+    CGFloat topInset = 44;
+    if (@available(iOS 11.0, *)) topInset = self.view.safeAreaInsets.top + 14;
+
+    UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(24, topInset, self.view.bounds.size.width - 48, 40)];
+    titleLabel.text = @"插件设置";
+    titleLabel.font = [UIFont boldSystemFontOfSize:28];
+    titleLabel.textColor = [UIColor blackColor];
+    titleLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [self.view addSubview:titleLabel];
+
+    // 副标题
+    UILabel *subLabel = [[UILabel alloc] initWithFrame:CGRectMake(24, topInset + 42, self.view.bounds.size.width - 48, 22)];
+    subLabel.text = @"TikTok God · LCSign 注入版";
+    subLabel.font = [UIFont systemFontOfSize:13];
+    subLabel.textColor = [UIColor colorWithWhite:0 alpha:0.5];
+    subLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [self.view addSubview:subLabel];
+
+    // 关闭按钮（右上角）
+    UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    closeBtn.frame = CGRectMake(self.view.bounds.size.width - 56, topInset + 4, 32, 32);
+    closeBtn.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    [closeBtn setTitle:@"✕" forState:UIControlStateNormal];
+    closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:16];
+    [closeBtn setTitleColor:[UIColor colorWithWhite:0 alpha:0.7] forState:UIControlStateNormal];
+    closeBtn.backgroundColor = [UIColor colorWithWhite:1 alpha:0.35];
+    closeBtn.layer.cornerRadius = 16;
+    closeBtn.layer.borderWidth = 0.5;
+    closeBtn.layer.borderColor = [UIColor colorWithWhite:0 alpha:0.1].CGColor;
+    [closeBtn addTarget:self action:@selector(dismissSelf) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:closeBtn];
+
+    // 全部开启按钮（标题旁边）
+    UIButton *allOnBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    allOnBtn.frame = CGRectMake(24, topInset + 72, 100, 30);
+    allOnBtn.autoresizingMask = UIViewAutoresizingFlexibleRightMargin;
+    [allOnBtn setTitle:@"🔓 全部开启" forState:UIControlStateNormal];
+    allOnBtn.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    [allOnBtn setTitleColor:[UIColor colorWithRed:0.1 green:0.5 blue:1 alpha:1] forState:UIControlStateNormal];
+    allOnBtn.backgroundColor = [UIColor colorWithRed:0.1 green:0.5 blue:1 alpha:0.1];
+    allOnBtn.layer.cornerRadius = 15;
+    [allOnBtn addTarget:self action:@selector(toggleAllOn) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:allOnBtn];
+
+    // 数据
     struct { NSString *t; BOOL *p; } raw[] = {
         { @"去广告", &noads },
         { @"无水印下载", &downloadWithoutWatermark },
@@ -521,13 +585,47 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
     }
     _rows = arr;
 
-    UIBarButtonItem *resetBtn = [[UIBarButtonItem alloc] initWithTitle:@"全部开启" style:UIBarButtonItemStylePlain target:self action:@selector(toggleAllOn)];
-    self.navigationItem.rightBarButtonItem = resetBtn;
+    // TableView（透明背景，放在卡片里）
+    CGFloat cardTop = topInset + 110;
+    CGFloat cardBottom = self.view.bounds.size.height - 80;   // 留给底部署名
+    _tableView = [[UITableView alloc] initWithFrame:CGRectMake(16, cardTop, self.view.bounds.size.width - 32, cardBottom - cardTop) style:UITableViewStylePlain];
+    _tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _tableView.backgroundColor = [UIColor colorWithWhite:1 alpha:0.35];
+    _tableView.layer.cornerRadius = 18;
+    _tableView.layer.borderWidth = 0.5;
+    _tableView.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.5].CGColor;
+    _tableView.clipsToBounds = YES;
+    _tableView.dataSource = self;
+    _tableView.delegate = self;
+    _tableView.rowHeight = 52;
+    _tableView.separatorStyle = UITableViewCellSeparatorStyleSingleLine;
+    _tableView.separatorColor = [UIColor colorWithWhite:0 alpha:0.1];
+    _tableView.tableFooterView = [[UIView alloc] init];
+    if (@available(iOS 11.0, *)) _tableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    [self.view addSubview:_tableView];
+
+    // 底部署名
+    UILabel *footer = [[UILabel alloc] initWithFrame:CGRectMake(0, self.view.bounds.size.height - 44, self.view.bounds.size.width, 30)];
+    footer.text = @"by ashun520  ·  LCSign 注入版  ·  祝使用愉快";
+    footer.font = [UIFont systemFontOfSize:11];
+    footer.textColor = [UIColor colorWithWhite:0 alpha:0.45];
+    footer.textAlignment = NSTextAlignmentCenter;
+    footer.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleWidth;
+    [self.view addSubview:footer];
+
+    // 点空白关闭
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dismissSelf)];
+    tap.cancelsTouchesInView = NO;
+    [bg addGestureRecognizer:tap];
+}
+
+- (void)dismissSelf {
+    [self dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)toggleAllOn {
     noads = downloadWithoutWatermark = autoPlayNextVideo = changeRegion = showProgressBar = canHideUI = enablePIP = enableBackgroundPlay = enableBypass = YES;
-    [self.tableView reloadData];
+    [_tableView reloadData];
     TTGShowToast(@"✅ 所有功能已开启");
 }
 
@@ -536,26 +634,40 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *ReuseId = @"TTGSettingsCell";
+    static NSString *ReuseId = @"TTGSettingsCell2";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:ReuseId];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:ReuseId];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.backgroundColor = [UIColor clearColor];
+        cell.contentView.backgroundColor = [UIColor clearColor];
     }
     NSDictionary *row = _rows[indexPath.row];
     BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
     cell.textLabel.text = row[@"title"];
+    cell.textLabel.font = [UIFont systemFontOfSize:15];
+    cell.textLabel.textColor = [UIColor colorWithWhite:0 alpha:0.85];
 
     UISwitch *sw = (UISwitch *)cell.accessoryView;
     if (!sw || ![sw isKindOfClass:[UISwitch class]]) {
         sw = [[UISwitch alloc] init];
-        sw.onTintColor = [UIColor systemGreenColor];
+        if (@available(iOS 13.0, *)) {
+            sw.onTintColor = [UIColor systemGreenColor];
+        } else {
+            sw.onTintColor = [UIColor colorWithRed:0.3 green:0.75 blue:0.4 alpha:1];
+        }
         cell.accessoryView = sw;
     }
     sw.tag = indexPath.row;
     sw.on = flag ? *flag : NO;
+    [sw removeTarget:nil action:nil forControlEvents:UIControlEventValueChanged];
     [sw addTarget:self action:@selector(switchToggled:) forControlEvents:UIControlEventValueChanged];
     return cell;
+}
+
+- (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
+    cell.backgroundColor = [UIColor clearColor];
+    cell.contentView.backgroundColor = [UIColor clearColor];
 }
 
 - (void)switchToggled:(UISwitch *)sw {
@@ -563,6 +675,10 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
     NSDictionary *row = _rows[sw.tag];
     BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
     if (flag) *flag = sw.isOn;
+}
+
+- (UIStatusBarStyle)preferredStatusBarStyle {
+    return UIStatusBarStyleDarkContent;
 }
 
 @end
@@ -608,9 +724,13 @@ __attribute__((constructor)) static void TTGInit(void) {
             CGFloat startY = 50;
             if (@available(iOS 11.0, *)) startY = 50 + win.safeAreaInsets.top + 34;
 
-            TTGFloatingButton *btn = [[TTGFloatingButton alloc] initWithFrame:CGRectMake(14, startY, 44, 44)];
+            TTGFloatingButton *btn = [[TTGFloatingButton alloc] initWithFrame:CGRectMake(0, startY, 44, 44)];
             [win addSubview:btn];
-            NSLog(@"[TTG] ✅ 悬浮按钮已添加");
+            // 默认吸附右边
+            CGRect f = btn.frame;
+            f.origin.x = win.bounds.size.width - f.size.width - 14;
+            btn.frame = f;
+            NSLog(@"[TTG] ✅ 悬浮按钮已添加（默认右边）");
         } @catch (NSException *e) {
             NSLog(@"[TTG] ctor btn err: %@", e);
         }
