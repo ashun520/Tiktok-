@@ -3,6 +3,27 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Photos/Photos.h>
 #import <objc/message.h>
+#import <objc/runtime.h>
+
+#pragma mark - 前向声明
+
+static void TTGDownloadAndSave(void);
+static void TTGDownloadImage(void);
+static void TTGDownloadMusic(void);
+static void TTGVRecurseInstall(UIViewController *vc);
+
+@interface TTGLongPressHandler : NSObject
++ (instancetype)shared;
+- (void)handleLongPress:(UILongPressGestureRecognizer *)gr;
+@end
+
+@interface TTGLongPressInstaller : NSObject
++ (void)swizzleViewDidAppear:(Class)cls;
+@end
+
+@interface UIButton (TTGBlock)
+- (void)addActionForBlock:(void(^)(void))block;
+@end
 
 #pragma mark - 全局开关
 
@@ -439,119 +460,426 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
     });
 }
 
-#pragma mark - 悬浮按钮
+#pragma mark - 长按手势 + 底部磨砂面板
 
-@interface TTGFloatingButton : UIButton
+// 长按手势处理：在 TikTok feed 上添加，触发 TTGActionPanelView
+@interface TTGActionPanelView : UIView
 @end
 
-@implementation TTGFloatingButton {
-    CGPoint _dragStart;
-    BOOL _dragging;
-    BOOL _longPressFired;
-    NSTimer *_longPressTimer;
+@implementation TTGActionPanelView {
+    UIView *_dimmingView;
+    UIView *_sheet;
+    CGFloat _sheetH;
 }
 
-- (instancetype)initWithFrame:(CGRect)frame {
-    self = [super initWithFrame:frame];
+- (instancetype)init {
+    self = [super initWithFrame:[UIScreen mainScreen].bounds];
     if (self) {
-        @try {
-            self.backgroundColor = [UIColor clearColor];
-            self.layer.cornerRadius = frame.size.width / 2;
-            self.layer.borderWidth = 1.0;
-            self.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.35].CGColor;
-            self.layer.shadowColor = [UIColor blackColor].CGColor;
-            self.layer.shadowOpacity = 0.25;
-            self.layer.shadowOffset = CGSizeMake(0, 4);
-            self.layer.shadowRadius = 12;
-            if (@available(iOS 13.0, *)) {
-                UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
-                UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blur];
-                blurView.frame = self.bounds;
-                blurView.layer.cornerRadius = frame.size.width / 2;
-                blurView.clipsToBounds = YES;
-                blurView.userInteractionEnabled = NO;
-                UIView *tint = [[UIView alloc] initWithFrame:self.bounds];
-                tint.backgroundColor = [UIColor colorWithWhite:1 alpha:0.15];
-                tint.layer.cornerRadius = frame.size.width / 2;
-                tint.userInteractionEnabled = NO;
-                [blurView.contentView addSubview:tint];
-                [self addSubview:blurView];
-                // 确保 imageView 在磨砂层之上
-                [self bringSubviewToFront:self.imageView];
-                UIImage *img = [UIImage systemImageNamed:@"arrow.down"];
-                UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightSemibold];
-                [self setImage:[img imageWithConfiguration:cfg] forState:UIControlStateNormal];
-                [self setTintColor:[UIColor blackColor]];
-            } else {
-                [self setTitle:@"↓" forState:UIControlStateNormal];
-                [self setTitleColor:[UIColor colorWithWhite:0 alpha:0.8] forState:UIControlStateNormal];
-                self.titleLabel.font = [UIFont boldSystemFontOfSize:22];
-            }
-        } @catch (NSException *e) {}
+        self.backgroundColor = [UIColor clearColor];
+        self.opaque = NO;
+        [self setup];
     }
     return self;
 }
 
-- (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
-    UITouch *t = [touches anyObject];
-    _dragStart = [t locationInView:self.superview];
-    _dragging = NO;
-    _longPressFired = NO;
-    @try {
-        _longPressTimer = [NSTimer scheduledTimerWithTimeInterval:0.6 target:self selector:@selector(fireLongPress) userInfo:nil repeats:NO];
-    } @catch (NSException *e) {}
-}
+// 全局数组存开关 BOOL* 指针（tag 作为索引）
+static NSMutableArray *_ttg_switch_ptrs = nil;
 
-- (void)fireLongPress {
-    _longPressFired = YES;
-    [self ttgShowSettings];
-}
+- (void)setup {
+    // 初始化指针数组
+    if (!_ttg_switch_ptrs) _ttg_switch_ptrs = [NSMutableArray array];
 
-- (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event {
-    UITouch *t = [touches anyObject];
-    CGPoint p = [t locationInView:self.superview];
-    CGFloat dx = p.x - _dragStart.x;
-    CGFloat dy = p.y - _dragStart.y;
-    if (fabs(dx) > 3 || fabs(dy) > 3) {
-        if (!_dragging) { [_longPressTimer invalidate]; _longPressTimer = nil; }
-        _dragging = YES;
+    CGRect b = self.bounds;
+
+    // 暗色遮罩
+    _dimmingView = [[UIView alloc] initWithFrame:b];
+    _dimmingView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _dimmingView.backgroundColor = [UIColor colorWithWhite:0 alpha:0.4];
+    [self addSubview:_dimmingView];
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dismiss)];
+    [_dimmingView addGestureRecognizer:tap];
+
+    // 底部 sheet（磨砂玻璃）
+    _sheetH = 380;
+    CGFloat bottomPad = 0;
+    if (@available(iOS 11.0, *)) {
+        UIWindow *w = TTGFrontmostWindow();
+        if (w) bottomPad = w.safeAreaInsets.bottom;
     }
-    if (_dragging) {
-        CGPoint center = self.center;
-        center.x += dx; center.y += dy;
-        CGRect b = self.superview.bounds;
-        center.x = MAX(self.frame.size.width/2, MIN(b.size.width - self.frame.size.width/2, center.x));
-        center.y = MAX(self.frame.size.height/2, MIN(b.size.height - self.frame.size.height/2, center.y));
-        self.center = center;
-        _dragStart = p;
+    _sheetH += bottomPad;
+
+    _sheet = [[UIView alloc] init];
+    _sheet.frame = CGRectMake(0, b.size.height, b.size.width, _sheetH);
+    _sheet.backgroundColor = [UIColor clearColor];
+    _sheet.layer.cornerRadius = 22;
+    _sheet.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
+    _sheet.layer.shadowColor = [UIColor blackColor].CGColor;
+    _sheet.layer.shadowOpacity = 0.3;
+    _sheet.layer.shadowOffset = CGSizeMake(0, -6);
+    _sheet.layer.shadowRadius = 24;
+    _sheet.clipsToBounds = NO;
+    [self addSubview:_sheet];
+
+    // 磨砂背景（Light 风格，跟之前统一）
+    UIBlurEffect *be = [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
+    UIVisualEffectView *bvg = [[UIVisualEffectView alloc] initWithEffect:be];
+    bvg.frame = _sheet.bounds;
+    bvg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    bvg.layer.cornerRadius = 22;
+    bvg.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
+    bvg.clipsToBounds = YES;
+    [_sheet addSubview:bvg];
+    UIView *tint = [[UIView alloc] initWithFrame:_sheet.bounds];
+    tint.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    tint.backgroundColor = [UIColor colorWithWhite:1 alpha:0.12];
+    [bvg.contentView addSubview:tint];
+
+    // 顶部标题
+    UILabel *title = [[UILabel alloc] init];
+    title.text = @"🎬 Tiktok God";
+    title.font = [UIFont boldSystemFontOfSize:18];
+    title.textColor = [UIColor colorWithWhite:0 alpha:0.9];
+    [_sheet addSubview:title];
+
+    UILabel *sub = [[UILabel alloc] init];
+    sub.text = @"长按视频界面唤起 · ashun520";
+    sub.font = [UIFont systemFontOfSize:11];
+    sub.textColor = [UIColor colorWithWhite:0 alpha:0.45];
+    [_sheet addSubview:sub];
+
+    UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [closeBtn setTitle:@"✕" forState:UIControlStateNormal];
+    closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:14];
+    [closeBtn setTitleColor:[UIColor colorWithWhite:0 alpha:0.6] forState:UIControlStateNormal];
+    closeBtn.backgroundColor = [UIColor colorWithWhite:0 alpha:0.08];
+    closeBtn.layer.cornerRadius = 14;
+    [closeBtn addTarget:self action:@selector(dismiss) forControlEvents:UIControlEventTouchUpInside];
+    [_sheet addSubview:closeBtn];
+
+    // 按钮容器（grid）
+    UIView *btnContainer = [[UIView alloc] init];
+    btnContainer.tag = 9001;
+    [_sheet addSubview:btnContainer];
+
+    // 构建按钮
+    // 行1：主动作（保存视频、保存图片、保存音乐、设置）
+    // 行2-3：开关（2列）
+    NSArray *actionBtns = @[
+        @{@"icon": @"arrow.down.circle.fill", @"title": @"保存视频", @"action": ^{ TTGDownloadAndSave(); }},
+        @{@"icon": @"photo.on.rectangle", @"title": @"保存图片", @"action": ^{ TTGDownloadImage(); }},
+        @{@"icon": @"music.note", @"title": @"保存音乐", @"action": ^{ TTGDownloadMusic(); }},
+        @{@"icon": @"gearshape.fill", @"title": @"设置面板", @"action": ^{ [self openSettings]; }},
+    ];
+
+    for (int i = 0; i < (int)actionBtns.count; i++) {
+        NSDictionary *item = actionBtns[i];
+        UIButton *btn = [self makeActionButtonWithIcon:item[@"icon"] title:item[@"title"]];
+        int row = i / 2;
+        int col = i % 2;
+        CGFloat containerW = [UIScreen mainScreen].bounds.size.width - 40;
+        CGFloat btnW = (containerW - 16) / 2;
+        CGFloat btnH = 48;
+        btn.frame = CGRectMake(col * (btnW + 16), row * (btnH + 10), btnW, btnH);
+        void (^blk)(void) = item[@"action"];
+        [btn addActionForBlock:blk];
+        [btnContainer addSubview:btn];
+    }
+
+    // 开关行
+    struct { NSString *t; BOOL *p; } raw[] = {
+        { @"🇺🇸 美国地区", &changeRegion },
+        { @"📺 画中画 PiP", &enablePIP },
+        { @"🎯 强制进度条", &showProgressBar },
+        { @"▶️ 自动连播", &autoPlayNextVideo },
+        { @"📴 去广告", &noads },
+        { @"🎭 隐藏UI", &canHideUI },
+        { @"🔊 后台播放", &enableBackgroundPlay },
+        { @"🛡️ 安全绕过", &enableBypass },
+    };
+    int n = sizeof(raw)/sizeof(raw[0]);
+
+    UIView *swContainer = [[UIView alloc] init];
+    swContainer.tag = 9002;
+    [_sheet addSubview:swContainer];
+
+    for (int i = 0; i < n; i++) {
+        UIView *row = [[UIView alloc] init];
+        row.tag = 9100 + i;
+
+        UILabel *lbl = [[UILabel alloc] init];
+        lbl.text = raw[i].t;
+        lbl.font = [UIFont systemFontOfSize:14];
+        lbl.textColor = [UIColor colorWithWhite:0 alpha:0.82];
+        [row addSubview:lbl];
+
+        UISwitch *sw = [[UISwitch alloc] init];
+        if (@available(iOS 13.0, *)) sw.onTintColor = [UIColor systemGreenColor];
+        sw.on = raw[i].p ? *raw[i].p : NO;
+        sw.tag = i;
+        [sw addTarget:self action:@selector(switchToggled:) forControlEvents:UIControlEventValueChanged];
+        [_ttg_switch_ptrs addObject:(raw[i].p ? [NSValue valueWithPointer:raw[i].p] : [NSNull null])];
+        [row addSubview:sw];
+
+        [swContainer addSubview:row];
+    }
+
+    // 关闭按钮
+    UIButton *sheetClose = [UIButton buttonWithType:UIButtonTypeSystem];
+    [sheetClose setTitle:@"关闭" forState:UIControlStateNormal];
+    sheetClose.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+    [sheetClose setTitleColor:[UIColor colorWithWhite:0 alpha:0.6] forState:UIControlStateNormal];
+    sheetClose.backgroundColor = [UIColor colorWithWhite:0 alpha:0.08];
+    sheetClose.layer.cornerRadius = 22;
+    [sheetClose addTarget:self action:@selector(dismiss) forControlEvents:UIControlEventTouchUpInside];
+    sheetClose.tag = 9003;
+    [_sheet addSubview:sheetClose];
+
+    // 底部署名
+    UILabel *footer = [[UILabel alloc] init];
+    footer.text = @"by ashun520 · LCSign 注入版 · 长按视频唤起";
+    footer.font = [UIFont systemFontOfSize:10.5];
+    footer.textColor = [UIColor colorWithWhite:0 alpha:0.3];
+    footer.textAlignment = NSTextAlignmentCenter;
+    footer.tag = 9004;
+    [_sheet addSubview:footer];
+}
+
+- (UIButton *)makeActionButtonWithIcon:(NSString *)iconName title:(NSString *)title {
+    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+    btn.backgroundColor = [UIColor colorWithWhite:1 alpha:0.35];
+    btn.layer.cornerRadius = 14;
+    btn.layer.borderColor = [UIColor colorWithWhite:0 alpha:0.08].CGColor;
+    btn.layer.borderWidth = 1.0;
+
+    UIImage *img = [UIImage systemImageNamed:iconName];
+    if (img) {
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightSemibold];
+        [btn setImage:[img imageWithConfiguration:cfg] forState:UIControlStateNormal];
+        [btn setTintColor:[UIColor colorWithWhite:0 alpha:0.8]];
+    }
+    [btn setTitle:title forState:UIControlStateNormal];
+    [btn setTitleColor:[UIColor colorWithWhite:0 alpha:0.85] forState:UIControlStateNormal];
+    btn.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+    btn.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+    btn.imageEdgeInsets = UIEdgeInsetsMake(0, 14, 0, 8);
+    btn.titleEdgeInsets = UIEdgeInsetsMake(0, 4, 0, 0);
+    return btn;
+}
+
+- (void)show {
+    UIWindow *win = TTGFrontmostWindow();
+    if (!win) return;
+    self.frame = win.bounds;
+    self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [win addSubview:self];
+
+    CGRect b = self.bounds;
+    _dimmingView.alpha = 0;
+    _sheet.frame = CGRectMake(0, b.size.height, b.size.width, _sheetH);
+    [self layoutSheetContents];
+
+    [UIView animateWithDuration:0.32 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0.3 options:0 animations:^{
+        self->_dimmingView.alpha = 1;
+        CGRect f = self->_sheet.frame;
+        f.origin.y = b.size.height - self->_sheetH;
+        self->_sheet.frame = f;
+    } completion:nil];
+}
+
+- (void)dismiss {
+    CGRect b = self.bounds;
+    [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{
+        self->_dimmingView.alpha = 0;
+        CGRect f = self->_sheet.frame;
+        f.origin.y = b.size.height;
+        self->_sheet.frame = f;
+    } completion:^(BOOL done) {
+        [self removeFromSuperview];
+    }];
+}
+
+- (void)layoutSheetContents {
+    CGFloat W = _sheet.bounds.size.width;
+    CGFloat pad = 20;
+
+    UILabel *title = (UILabel *)[_sheet viewWithTag:90000];
+    if (!title) { title = (UILabel *)[self findViewIn:_sheet type:@"UILabel" idx:0]; title.tag = 90000; }
+    UILabel *sub = (UILabel *)[self findViewIn:_sheet type:@"UILabel" idx:1];
+    UIButton *closeBtn = (UIButton *)[self findViewIn:_sheet type:@"UIButton" idx:0];
+
+    title.frame = CGRectMake(pad, 16, 180, 24);
+    sub.frame = CGRectMake(pad, 38, 200, 14);
+    closeBtn.frame = CGRectMake(W - 46, 12, 28, 28);
+
+    // 按钮容器：y = 70, 2行 x 2列 = 96pt
+    UIView *btnContainer = (UIView *)[_sheet viewWithTag:9001];
+    btnContainer.frame = CGRectMake(pad, 70, W - pad * 2, 106);
+
+    // 开关容器：从 186 开始
+    UIView *swContainer = (UIView *)[_sheet viewWithTag:9002];
+    swContainer.frame = CGRectMake(pad, 186, W - pad * 2, 140);
+
+    // 开关 2列 x 4行
+    int n = 8;
+    CGFloat rowH = 34;
+    CGFloat colW = (W - pad * 2 - 16) / 2;
+    for (int i = 0; i < n; i++) {
+        UIView *row = (UIView *)[swContainer viewWithTag:9100 + i];
+        if (!row) continue;
+        int col = i % 2;
+        int rowIdx = i / 2;
+        row.frame = CGRectMake(col * (colW + 16), rowIdx * rowH, colW, rowH);
+        UILabel *lbl = (UILabel *)row.subviews.firstObject;
+        UISwitch *sw = (UISwitch *)row.subviews.lastObject;
+        lbl.frame = CGRectMake(0, 6, colW - 54, 22);
+        sw.frame = CGRectMake(colW - 51, 3, 51, 31);
+    }
+
+    // 关闭按钮
+    UIButton *sheetClose = (UIButton *)[_sheet viewWithTag:9003];
+    sheetClose.frame = CGRectMake((W - 100) / 2, _sheetH - 60, 100, 40);
+
+    // 底部署名
+    UILabel *footer = (UILabel *)[_sheet viewWithTag:9004];
+    footer.frame = CGRectMake(pad, _sheetH - 24, W - pad * 2, 16);
+}
+
+- (UIView *)findViewIn:(UIView *)root type:(NSString *)clsName idx:(int)idx {
+    __block int found = 0;
+    __block UIView *result = nil;
+    [self traverse:root block:^(UIView *v, BOOL *stop) {
+        if ([NSStringFromClass([v class]) isEqualToString:clsName]) {
+            if (found == idx) { result = v; *stop = YES; }
+            found++;
+        }
+    }];
+    return result;
+}
+
+- (void)traverse:(UIView *)v block:(void(^)(UIView *, BOOL *))block {
+    BOOL stop = NO;
+    block(v, &stop);
+    if (stop) return;
+    for (UIView *sub in v.subviews) [self traverse:sub block:block];
+}
+
+- (void)switchToggled:(UISwitch *)sw {
+    if (sw.tag < 0 || sw.tag >= (int)_ttg_switch_ptrs.count) return;
+    id v = _ttg_switch_ptrs[sw.tag];
+    if ([v isKindOfClass:[NSValue class]]) {
+        BOOL *ptr = (BOOL *)[(NSValue *)v pointerValue];
+        if (ptr) *ptr = sw.isOn;
     }
 }
 
-- (void)touchesEnded:(NSSet *)touches withEvent:(UIEvent *)event {
-    [_longPressTimer invalidate]; _longPressTimer = nil;
-    if (_dragging) {
-        CGRect b = self.superview.bounds;
-        CGFloat mid = b.size.width / 2;
-        CGRect f = self.frame;
-        if (f.origin.x + f.size.width/2 < mid) f.origin.x = 8;
-        else f.origin.x = b.size.width - f.size.width - 8;
-        [UIView animateWithDuration:0.2 animations:^{ self.frame = f; }];
-    } else if (!_longPressFired) {
-        TTGDownloadAndSave();
-    }
-}
-
-- (void)ttgShowSettings {
-    Class cls = NSClassFromString(@"TTGSettingsViewController");
-    if (!cls) return;
-    UIViewController *vc = [[cls alloc] init];
+- (void)openSettings {
+    UIViewController *top = TTGTopVC();
+    if (!top) { [self dismiss]; return; }
+    UIViewController *vc = [[NSClassFromString(@"TTGSettingsViewController") alloc] init];
+    if (!vc) return;
     vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
     vc.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
-    UIViewController *top = TTGTopVC();
-    if (!top) return;
-    [top presentViewController:vc animated:YES completion:nil];
+    [self dismiss];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [top presentViewController:vc animated:YES completion:nil];
+    });
 }
 
+@end
+
+// UIButton block action 扩展
+@implementation UIButton (TTGBlock)
+- (void)addActionForBlock:(void(^)(void))block {
+    objc_setAssociatedObject(self, "ttg_action_block", block, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    [self addTarget:self action:@selector(ttg_fireBlock) forControlEvents:UIControlEventTouchUpInside];
+}
+- (void)ttg_fireBlock {
+    void(^blk)(void) = objc_getAssociatedObject(self, "ttg_action_block");
+    if (blk) blk();
+}
+@end
+
+// 长按手势识别器：添加到 TikTok 最上层视图
+static NSMutableArray *_ttg_gestureTargets = nil;
+
+static void TTGInstallLongPressOnce(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        _ttg_gestureTargets = [NSMutableArray array];
+    });
+}
+
+static void TTGInstallLongPressOnView(UIView *view) {
+    if (!view) return;
+    TTGInstallLongPressOnce();
+    // 防止重复添加
+    for (UIGestureRecognizer *g in view.gestureRecognizers) {
+        if ([g isKindOfClass:[UILongPressGestureRecognizer class]] && g.view == view) return;
+    }
+    UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:[TTGLongPressHandler shared] action:@selector(handleLongPress:)];
+    lp.minimumPressDuration = 0.6;
+    lp.allowableMovement = 30;
+    lp.cancelsTouchesInView = NO;
+    [view addGestureRecognizer:lp];
+}
+
+@implementation TTGLongPressHandler
++ (instancetype)shared {
+    static TTGLongPressHandler *inst;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ inst = [[TTGLongPressHandler alloc] init]; });
+    return inst;
+}
+- (void)handleLongPress:(UILongPressGestureRecognizer *)gr {
+    if (gr.state == UIGestureRecognizerStateBegan) {
+        TTGActionPanelView *panel = [[TTGActionPanelView alloc] init];
+        [panel show];
+        NSLog(@"[TTG] 👆 长按触发面板");
+    }
+}
+@end
+
+// 替代 %hook AWEFeedContainerViewController viewDidAppear:
+static void TTGInstallFeedHook(void) {
+    @try {
+        Class cls = NSClassFromString(@"AWEFeedContainerViewController");
+        if (!cls) {
+            // 类名可能变了，列出所有含 Feed 的类做兜底
+            NSLog(@"[TTG] ⚠️ AWEFeedContainerViewController 未找到，尝试搜索含 Feed 的类");
+            int count = objc_getClassList(NULL, 0);
+            Class *classes = (Class *)malloc(sizeof(Class) * count);
+            objc_getClassList(classes, count);
+            for (int i = 0; i < count; i++) {
+                NSString *name = NSStringFromClass(classes[i]);
+                if ([name containsString:@"Feed"] && [name containsString:@"ViewController"]) {
+                    NSLog(@"[TTG] 🔍 发现候选: %@", name);
+                    [TTGLongPressInstaller swizzleViewDidAppear:classes[i]];
+                }
+            }
+            free(classes);
+            return;
+        }
+        [TTGLongPressInstaller swizzleViewDidAppear:cls];
+        NSLog(@"[TTG] ✅ Feed hook 安装成功");
+    } @catch (NSException *e) {
+        NSLog(@"[TTG] feed hook err: %@", e);
+    }
+}
+
+@implementation TTGLongPressInstaller
++ (void)swizzleViewDidAppear:(Class)cls {
+    SEL sel = @selector(viewDidAppear:);
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) return;
+    IMP origImp = method_getImplementation(m);
+    IMP newImp = imp_implementationWithBlock(^(id self, BOOL animated) {
+        ((void(*)(id, SEL, BOOL))origImp)(self, sel, animated);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            TTGInstallLongPressOnView([self valueForKey:@"view"]);
+        });
+    });
+    method_setImplementation(m, newImp);
+}
 @end
 
 #pragma mark - 设置页（液态玻璃）
@@ -834,29 +1162,49 @@ static void TTGInstallSafeHooks(void) {
     }
 }
 
+#pragma mark - 保存图片/音乐（占位，后续补完整）
+
+static void TTGDownloadImage(void) {
+    TTGShowToast(@"🖼️ 图片保存开发中，先用保存视频");
+}
+
+static void TTGDownloadMusic(void) {
+    TTGShowToast(@"🎵 音乐保存开发中");
+}
+
 #pragma mark - Constructor
 
 __attribute__((constructor)) static void TTGInit(void) {
     NSLog(@"[TTG] 🚀 ctor 启动");
     TTGInstallSafeHooks();
+    TTGInstallFeedHook();
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         @try {
             UIWindow *win = TTGFrontmostWindow();
             if (!win) { NSLog(@"[TTG] ❌ 没找到 window"); return; }
-
-            CGFloat startY = 110;
-            if (@available(iOS 11.0, *)) startY = 110 + win.safeAreaInsets.top + 34;
-
-            TTGFloatingButton *btn = [[TTGFloatingButton alloc] initWithFrame:CGRectMake(0, startY, 44, 44)];
-            [win addSubview:btn];
-            // 默认吸附右边
-            CGRect f = btn.frame;
-            f.origin.x = win.bounds.size.width - f.size.width - 14;
-            btn.frame = f;
-            NSLog(@"[TTG] ✅ 悬浮按钮已添加（默认右边）");
+            UIViewController *rootVC = win.rootViewController;
+            if (!rootVC) return;
+            // 尝试递归遍历 VC 的 view 安装长按手势（兜底 Feed hook 类名漂了也能用）
+            TTGVRecurseInstall(rootVC);
+            NSLog(@"[TTG] ✅ 长按手势就绪，进入视频页面后长按 0.6s 弹出面板");
         } @catch (NSException *e) {
-            NSLog(@"[TTG] ctor btn err: %@", e);
+            NSLog(@"[TTG] ctor err: %@", e);
         }
     });
+}
+
+// 递归遍历 VC 树并尝试安装长按手势（兜底逻辑，避免类名变了 hook 失效）
+static void TTGVRecurseInstall(UIViewController *vc) {
+    if (!vc || !vc.view) return;
+    NSString *cls = NSStringFromClass([vc class]);
+    // 在常见的 feed 容器上安装
+    if ([cls containsString:@"Feed"] || [cls containsString:@"Player"] ||
+        [cls containsString:@"Video"] || [cls containsString:@"Container"] ||
+        [cls containsString:@"Aweme"] || [cls containsString:@"Home"]) {
+        TTGInstallLongPressOnView(vc.view);
+    }
+    for (UIViewController *child in vc.childViewControllers) {
+        TTGVRecurseInstall(child);
+    }
 }
