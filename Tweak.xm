@@ -566,6 +566,33 @@ static UIWindow *TTGFrontmostWindow(void) {
     return nil;
 }
 
+// 详情页显示时 disable window 上的长按手势 → 彻底释放触摸给 switch/slider
+static void TTGSetWindowLongPressEnabled(BOOL enabled) {
+    NSArray *allWindows = nil;
+    if (@available(iOS 13.0, *)) {
+        NSMutableArray *ws = [NSMutableArray array];
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:NSClassFromString(@"UIWindowScene")]) {
+                [ws addObjectsFromArray:[(id)scene windows]];
+            }
+        }
+        allWindows = ws;
+    } else {
+        allWindows = [UIApplication sharedApplication].windows;
+    }
+    for (UIWindow *win in allWindows) {
+        for (UIGestureRecognizer *gr in win.gestureRecognizers) {
+            // window 上只有我们的单指(TTGSinglePressRecognizer)和双指(UILongPressGestureRecognizer)
+            // 子视图上的长按已被我们 Kill 函数禁用了
+            if ([gr isKindOfClass:[UILongPressGestureRecognizer class]] ||
+                [gr isKindOfClass:NSClassFromString(@"TTGSinglePressRecognizer")]) {
+                gr.enabled = enabled;
+                NSLog(@"[TTG] ✋ 手势 %@ enabled=%d", NSStringFromClass([gr class]), enabled);
+            }
+        }
+    }
+}
+
 static UIViewController *TTGTopVC(void) {
     UIWindow *win = TTGFrontmostWindow();
     UIViewController *vc = win.rootViewController;
@@ -2117,6 +2144,11 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     // 关键：强持有 nav！否则 ARC 立即释放 nav 和 vc → switch 的 target 变野指针
     _detailNav = nav;
 
+    // 关键：彻底 disable window 上的长按手势！
+    // 即使 shouldReceiveTouch 返回 NO，iOS 手势系统仍会干扰触摸路由 → switch/slider 点不动
+    // 直接 set enabled=NO → 手势完全不工作 → 触摸 100% 传递给详情页控件
+    TTGSetWindowLongPressEnabled(NO);
+
     // 关键：不走 present！直接把 nav.view 加到 window 上
     // 彻底绕过 iOS 嵌套 present 的触摸事件问题
     UIWindow *win = nil;
@@ -2141,6 +2173,9 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (void)removeNavFromWindow {
+    // 关闭详情页 → 恢复 window 上的长按手势
+    TTGSetWindowLongPressEnabled(YES);
+
     // 找到所有 window 里 tag=9999 的 view（就是我们加的 nav.view），移除
     NSArray *allWindows = nil;
     if (@available(iOS 13.0, *)) {
