@@ -16,13 +16,26 @@ static void TTGDownloadLivePhoto(void);
 @class TTGSettingsViewController;
 
 // 递归禁用整个 view 树里除了保留的 window 上的手势之外的所有 UILongPressGestureRecognizer
+// Kill 子视图长按手势，但跳过评论/搜索/输入区域
+static BOOL TTGIsProtectedView(UIView *v) {
+    UIView *check = v;
+    while (check) {
+        NSString *cls = NSStringFromClass([check class]);
+        if ([cls rangeOfString:@"Comment" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+        if ([cls rangeOfString:@"Search" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+        if ([check isKindOfClass:[UITextField class]] || [check isKindOfClass:[UITextView class]]) return YES;
+        if ([check isKindOfClass:[UIButton class]]) return YES;
+        check = check.superview;
+    }
+    return NO;
+}
+
 static void TTGKillAllLongPressInViewExcept(UIView *v, UIGestureRecognizer *except) {
+    if (TTGIsProtectedView(v)) return;  // 跳过评论/搜索区，保留 TikTok 的长按（翻译/复制菜单）
     for (UIGestureRecognizer *gr in v.gestureRecognizers) {
         if (gr == except) continue;
         if (![gr isKindOfClass:[UILongPressGestureRecognizer class]]) continue;
-        // 如果 gr 也在 window 上（是我们双指的那个），也保留
         if (gr.view && [gr.view isKindOfClass:[UIWindow class]]) continue;
-        // 双重保险：先 cancel state，再 disable
         if (gr.state != UIGestureRecognizerStateEnded &&
             gr.state != UIGestureRecognizerStateCancelled &&
             gr.state != UIGestureRecognizerStateFailed) {
@@ -2096,21 +2109,60 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
     nav.navigationBar.tintColor = [UIColor systemBlueColor];
+    vc.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+        initWithTitle:@"关闭" style:UIBarButtonItemStylePlain target:self
+        action:@selector(removeNavFromWindow)];
 
-    // present 到 self（主设置面板）上，用 OverFullScreen + 手动 alpha
-    // 必须 present 到 self！topVC 已经 present 了 self，iOS 不允许同时 present 两个
-    // OverFullScreen 确保底下的 self.view 不被卸载，触摸事件正常传
-    nav.modalPresentationStyle = UIModalPresentationOverFullScreen;
-    nav.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
+    // 关键：不走 present！直接把 nav.view 加到 window 上
+    // 彻底绕过 iOS 嵌套 present 的触摸事件问题
+    UIWindow *win = nil;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:NSClassFromString(@"UIWindowScene")]) {
+                NSArray *ws = [(id)scene windows];
+                if (ws.count > 0) { win = ws[0]; break; }
+            }
+        }
+    }
+    if (!win) win = [UIApplication sharedApplication].windows.firstObject;
+    if (!win) return;
+
+    nav.view.frame = win.bounds;
     nav.view.alpha = 0;
+    nav.view.tag = 9999;  // 标记一下，关闭时找这个
+    [win addSubview:nav.view];
 
-    [self presentViewController:nav animated:NO completion:^{
-        [UIView animateWithDuration:0.25 animations:^{ nav.view.alpha = 1; }];
-    }];
+    [UIView animateWithDuration:0.25 animations:^{ nav.view.alpha = 1; }];
+    NSLog(@"[TTG] 📱 详情页 %@ 已加到 window", NSStringFromClass([vc class]));
 }
 
+- (void)removeNavFromWindow {
+    // 找到所有 window 里 tag=9999 的 view（就是我们加的 nav.view），移除
+    NSArray *allWindows = nil;
+    if (@available(iOS 13.0, *)) {
+        NSMutableArray *ws = [NSMutableArray array];
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:NSClassFromString(@"UIWindowScene")]) {
+                [ws addObjectsFromArray:[(id)scene windows]];
+            }
+        }
+        allWindows = ws;
+    } else {
+        allWindows = [UIApplication sharedApplication].windows;
+    }
+    for (UIWindow *win in allWindows) {
+        UIView *v = [win viewWithTag:9999];
+        if (v) {
+            [UIView animateWithDuration:0.2 animations:^{ v.alpha = 0; } completion:^(BOOL done) {
+                [v removeFromSuperview];
+            }];
+        }
+    }
+}
+
+// 兼容旧方法（如果哪里还在调）
 - (void)dismissDetail:(id)sender {
-    [self dismissViewControllerAnimated:YES completion:nil];
+    [self removeNavFromWindow];
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
