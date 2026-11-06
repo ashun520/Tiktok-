@@ -21,6 +21,17 @@ static void TTGDownloadMusic(void);
 @property (nonatomic, assign) CGFloat allowableMovement;    // 默认 10
 @end
 
+static void TTGKillAllOtherLongPressInView(UIView *v) {
+    for (UIGestureRecognizer *gr in v.gestureRecognizers) {
+        if ([gr isKindOfClass:[UILongPressGestureRecognizer class]] && gr.state != UIGestureRecognizerStateEnded && gr.state != UIGestureRecognizerStateCancelled && gr.state != UIGestureRecognizerStateFailed) {
+            gr.state = UIGestureRecognizerStateCancelled;
+        }
+    }
+    for (UIView *sub in v.subviews) {
+        TTGKillAllOtherLongPressInView(sub);
+    }
+}
+
 @implementation TTGOneFingerHoldRecognizer {
     CGPoint _startPoint;
     BOOL _fired;
@@ -50,11 +61,15 @@ static void TTGDownloadMusic(void);
         if (_cancelled) { NSLog(@"[TTG] 👆 timer 触发但已取消"); return; }
         __strong typeof(wself) self = wself;
         if (!self) return;
-        if (self.state == UIGestureRecognizerStatePossible) {
-            self->_fired = YES;
-            NSLog(@"[TTG] ✅ 👆 timer 到点 → set state=Began");
-            self.state = UIGestureRecognizerStateBegan;
+        if (self.state != UIGestureRecognizerStatePossible) return;
+        // 关键：先掐掉整个 window 上所有 TikTok 内部的长按手势 timer
+        UIView *win = self.view;
+        if ([win isKindOfClass:[UIWindow class]]) {
+            TTGKillAllOtherLongPressInView(win);
         }
+        self->_fired = YES;
+        NSLog(@"[TTG] ✅ 👆 timer 到点 → Kill 其他长按 → set state=Began");
+        self.state = UIGestureRecognizerStateBegan;
     });
 }
 
