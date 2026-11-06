@@ -819,7 +819,6 @@ static NSHashTable *_ttg_windowsWithGesture = nil;
 - (void)handleDoubleLongPress:(UILongPressGestureRecognizer *)gr {
     if (gr.state == UIGestureRecognizerStateBegan) {
         NSLog(@"[TTG] ✌️ 双指长按 → 设置面板");
-        // 用 objc_msgSend 绕开前向声明限制
         Class cls = NSClassFromString(@"TTGSettingsViewController");
         if (!cls) { NSLog(@"[TTG] ❌ TTGSettingsViewController 未找到"); return; }
         id vc = [[cls alloc] init];
@@ -832,6 +831,23 @@ static NSHashTable *_ttg_windowsWithGesture = nil;
         }
     }
 }
+
+// MARK: - UIGestureRecognizerDelegate
+// 让 window 上的手势优先，TikTok 内部的手势必须等我们先失败
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    // 其他任何手势（包括 TikTok 内部长按）都等我们先失败
+    if (gestureRecognizer.view && [gestureRecognizer.view isKindOfClass:[UIWindow class]]) {
+        return YES;
+    }
+    return NO;
+}
+
+// 允许同时识别（避免 iOS 系统自动取消）
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    return YES;
+}
 @end
 
 static void TTGInstallGesturesOnWindow(UIWindow *win) {
@@ -842,12 +858,12 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     });
     if ([_ttg_windowsWithGesture containsObject:win]) return;
 
-    // 单指长按（0.5s）→ 动作面板
+    // 单指长按（0.4s，比 TikTok 自带的 0.5s 更快）→ 动作面板
     UILongPressGestureRecognizer *single = [[UILongPressGestureRecognizer alloc]
         initWithTarget:[TTGLongPressHandler shared] action:@selector(handleSingleLongPress:)];
-    single.minimumPressDuration = 0.5;
+    single.minimumPressDuration = 0.4;
     single.numberOfTouchesRequired = 1;
-    single.allowableMovement = 20;
+    single.allowableMovement = 25;
     single.cancelsTouchesInView = NO;
     single.delaysTouchesBegan = NO;
     single.delaysTouchesEnded = NO;
@@ -864,6 +880,12 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 
     // 关键：单指等双指失败 → 双指操作时单指不会误触
     [single requireGestureRecognizerToFail:dbl];
+
+    // delegate：让所有子视图上的手势（包括 TikTok 自带的）等我们先失败
+    // shouldBeRequiredToFailByGestureRecognizer: 反向依赖
+    // shouldRecognizeSimultaneouslyWithGestureRecognizer: 允许同时识别
+    single.delegate = (id<UIGestureRecognizerDelegate>)[TTGLongPressHandler shared];
+    dbl.delegate = (id<UIGestureRecognizerDelegate>)[TTGLongPressHandler shared];
 
     [win addGestureRecognizer:single];
     [win addGestureRecognizer:dbl];
