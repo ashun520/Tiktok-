@@ -69,15 +69,19 @@ static void TTGDisableAllChildLongPresses(void) {
 
 #define TTG_SINGLE_DELAY      0.40
 #define TTG_SINGLE_MOVE_LIMIT 25.0
+#define TTG_SUPER_TIMEOUT     999.0  // super 的 timer 永不触发（我们用自研的）
 
-// ========== 核心：完全不调 super 的 touchesBegan ==========
-// super 的 UILongPressGestureRecognizer 会启动它自己的 timer，跟我们竞争。
-// 我们完全接管 touches 流程，自己启动自研 timer，彻底排除 iOS 手势系统的干扰。
+// ========== touchesBegan ==========
+// 先把 super 的 minimumPressDuration 设成 999s（让 super 的 timer 永不竞争）
+// 然后调 super.touchesBegan —— 必须调！iOS 手势系统靠这个知道我们在 tracking touches，
+// 否则后续 touchesAdded/Removed/Moved 可能不会被调给我们！
+// 最后启动自研 0.4s timer，到点直接 Began。
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    // 多指 → 不启动单指 timer（双指长按的场景，让双指手势自己处理）
+    // 多指 → 直接 Fail，不启动 timer
     if (touches.count != 1) {
         self.state = UIGestureRecognizerStateFailed;
+        [super touchesBegan:touches withEvent:event];
         return;
     }
     
@@ -87,16 +91,24 @@ static void TTGDisableAllChildLongPresses(void) {
     
     NSLog(@"[TTG] 👆 touchesBegan(1指) → 禁用子视图长按 → 自研 timer %.2fs", TTG_SINGLE_DELAY);
     
+    // 关键：先把 super 的 timer 设成永不触发
+    self.minimumPressDuration = TTG_SUPER_TIMEOUT;
+    
+    // 必须调 super —— iOS 手势系统靠这个 tracking touches，才能正确调 touchesAdded 等
+    [super touchesBegan:touches withEvent:event];
+    
     // 立即禁用所有子视图上的 UILongPressGestureRecognizer
     TTGDisableAllChildLongPresses();
     
-    // 自研 timer：到点直接把 state 设为 Began → 触发 handleSingleLongPress
+    // 自研 timer：到点 Began
     __weak typeof(self) weakSelf = self;
     _ttg_timer_block = dispatch_block_create((dispatch_block_flags_t)0, ^{
         __strong typeof(weakSelf) self = weakSelf;
         if (!self) return;
         if (self->_ttg_fired) return;
         if (self.state != UIGestureRecognizerStatePossible) return;
+        // 保险：timer 到点时如果已经 Failed/Cancelled 了就不触发
+        // （touchesAdded 会在 timer 之前 cancel 我们的 timer 或 Fail 我们的 state）
         self->_ttg_fired = YES;
         NSLog(@"[TTG] ✅ 👆 自研 timer 到点 → state = Began");
         self.state = UIGestureRecognizerStateBegan;
@@ -104,66 +116,60 @@ static void TTGDisableAllChildLongPresses(void) {
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(TTG_SINGLE_DELAY * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), _ttg_timer_block);
-    
-    // 注意：完全不调 [super touchesBegan:touches withEvent:event]
-    // 这样 super 不会启动它自己的 minimumPressDuration timer，不会跟我们竞争
 }
 
 // ========== 手指移动 → 超范围 cancel timer + Fail ==========
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    if (_ttg_fired) return; // 已经 Began 了就不管移动了
-    UITouch *touch = touches.anyObject;
-    CGPoint p = [touch locationInView:self.view];
-    CGFloat dx = p.x - _ttg_startPoint.x;
-    CGFloat dy = p.y - _ttg_startPoint.y;
-    CGFloat maxD = TTG_SINGLE_MOVE_LIMIT + 2;
-    if ((dx*dx + dy*dy) > maxD*maxD) {
-        [self _ttg_cancelTimer];
-        NSLog(@"[TTG] 👆 touchesMoved 超范围(%.1fpx) → Fail", sqrtf(dx*dx + dy*dy));
-        self.state = UIGestureRecognizerStateFailed;
+    if (!_ttg_fired) {
+        UITouch *touch = touches.anyObject;
+        CGPoint p = [touch locationInView:self.view];
+        CGFloat dx = p.x - _ttg_startPoint.x;
+        CGFloat dy = p.y - _ttg_startPoint.y;
+        CGFloat maxD = TTG_SINGLE_MOVE_LIMIT + 2;
+        if ((dx*dx + dy*dy) > maxD*maxD) {
+            [self _ttg_cancelTimer];
+            NSLog(@"[TTG] 👆 touchesMoved 超范围 → Fail");
+            self.state = UIGestureRecognizerStateFailed;
+        }
     }
+    [super touchesMoved:touches withEvent:event];
 }
 
 // ========== 第二指按下 → cancel 单指 timer + Fail ==========
+// 这是关键修复！因为我们调了 super.touchesBegan，iOS 手势系统
+// 正确把我们当作 tracking 状态，所以第二指 down 时一定会调 touchesAdded
 - (void)touchesAdded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    NSLog(@"[TTG] 👆 touchesAdded → %lu 指了 → cancel 单指 timer", (unsigned long)touches.count);
+    NSLog(@"[TTG] 👆 touchesAdded(+%lu) → cancel 单指 timer + Fail", (unsigned long)touches.count);
     [self _ttg_cancelTimer];
     self.state = UIGestureRecognizerStateFailed;
 }
 
-// ========== 手指离开，只剩 1 指或 0 指 ==========
+// ========== 手指离开 ==========
 - (void)touchesRemoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    UITouch *t = touches.anyObject;
-    CGPoint p = [t locationInView:self.view];
-    CGFloat dx = p.x - _ttg_startPoint.x;
-    CGFloat dy = p.y - _ttg_startPoint.y;
-    CGFloat maxD = TTG_SINGLE_MOVE_LIMIT + 2;
-    if ((dx*dx + dy*dy) > maxD*maxD) {
-        [self _ttg_cancelTimer];
-        NSLog(@"[TTG] 👆 touchesMoved 超范围 → Fail");
-        self.state = UIGestureRecognizerStateFailed;
-    }
+    // 不需要做什么，timer 已经在 touchesEnded/Cancelled 里被管了
 }
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     NSLog(@"[TTG] 👆 touchesEnded → fired=%d", _ttg_fired);
     [self _ttg_cancelTimer];
-    // 如果已经 Began 过，正常 End；还没 Began 就松手 → Fail
     if (_ttg_fired) self.state = UIGestureRecognizerStateEnded;
     else self.state = UIGestureRecognizerStateFailed;
+    [super touchesEnded:touches withEvent:event];
 }
 
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     NSLog(@"[TTG] 👆 touchesCancelled → Fail");
     [self _ttg_cancelTimer];
     self.state = UIGestureRecognizerStateCancelled;
+    [super touchesCancelled:touches withEvent:event];
 }
 
 - (void)reset {
     NSLog(@"[TTG] 👆 reset");
     [self _ttg_cancelTimer];
     _ttg_fired = NO;
-    [super reset]; // reset 里必须调 super，iOS 要求
+    // reset 时恢复默认 duration（不影响什么，下次 touchesBegan 还会设成 999）
+    [super reset];
 }
 
 - (void)_ttg_cancelTimer {
@@ -994,7 +1000,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     if (!hasSingle) {
         TTGSinglePressRecognizer *single = [[TTGSinglePressRecognizer alloc]
             initWithTarget:[TTGLongPressHandler shared] action:@selector(handleSingleLongPress:)];
-        single.minimumPressDuration = 0.4;
+        single.minimumPressDuration = 999.0;  // 让 super 的 timer 永不触发，我们有自研的
         single.numberOfTouchesRequired = 1;
         single.allowableMovement = 25;
         single.cancelsTouchesInView = YES;
