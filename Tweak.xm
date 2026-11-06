@@ -57,7 +57,7 @@ static void TTGDisableAllChildLongPresses(void) {
     } @catch (NSException *e) {}
 }
 
-// 单指长按：完全自定义，自己控 timer，彻底绕开 iOS 手势竞争
+// 单指长按：完全自研，完全不调 super 的 touches，彻底绕开 iOS 手势系统的任何干扰
 @interface TTGSinglePressRecognizer : UILongPressGestureRecognizer {
     dispatch_block_t _ttg_timer_block;
     CGPoint _ttg_startPoint;
@@ -67,10 +67,17 @@ static void TTGDisableAllChildLongPresses(void) {
 
 @implementation TTGSinglePressRecognizer
 
+#define TTG_SINGLE_DELAY      0.40
+#define TTG_SINGLE_MOVE_LIMIT 25.0
+
+// ========== 核心：完全不调 super 的 touchesBegan ==========
+// super 的 UILongPressGestureRecognizer 会启动它自己的 timer，跟我们竞争。
+// 我们完全接管 touches 流程，自己启动自研 timer，彻底排除 iOS 手势系统的干扰。
+
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    // 多指 → 不启动单指 timer（双指长按的场景，让双指手势自己处理）
     if (touches.count != 1) {
-        // 不是单指 → 不启动我们的 timer（让 super 自己处理，可能会 cancel/fail）
-        [super touchesBegan:touches withEvent:event];
+        self.state = UIGestureRecognizerStateFailed;
         return;
     }
     
@@ -78,76 +85,92 @@ static void TTGDisableAllChildLongPresses(void) {
     _ttg_startPoint = [touch locationInView:self.view];
     _ttg_fired = NO;
     
-    NSLog(@"[TTG] 👆 touchesBegan → Kill 所有子视图长按 + 启动自研 timer(0.4s)");
+    NSLog(@"[TTG] 👆 touchesBegan(1指) → 禁用子视图长按 → 自研 timer %.2fs", TTG_SINGLE_DELAY);
     
-    // 第一波：立即禁用所有子视图的长按手势（enabled=NO + state=cancelled）
+    // 立即禁用所有子视图上的 UILongPressGestureRecognizer
     TTGDisableAllChildLongPresses();
     
-    // 也调 super（让系统正常记录 touches），但我们的 timer 不受它控制
-    [super touchesBegan:touches withEvent:event];
-    
-    // 自研 timer：0.4s 到点即弹，不等松手
-    // 子视图的长按已经被 TTGDisableAllChildLongPresses 禁用，没有竞争
+    // 自研 timer：到点直接把 state 设为 Began → 触发 handleSingleLongPress
     __weak typeof(self) weakSelf = self;
     _ttg_timer_block = dispatch_block_create((dispatch_block_flags_t)0, ^{
         __strong typeof(weakSelf) self = weakSelf;
         if (!self) return;
-        if (self.state != UIGestureRecognizerStatePossible) return;
         if (self->_ttg_fired) return;
+        if (self.state != UIGestureRecognizerStatePossible) return;
         self->_ttg_fired = YES;
         NSLog(@"[TTG] ✅ 👆 自研 timer 到点 → state = Began");
         self.state = UIGestureRecognizerStateBegan;
     });
     
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), _ttg_timer_block);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(TTG_SINGLE_DELAY * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), _ttg_timer_block);
+    
+    // 注意：完全不调 [super touchesBegan:touches withEvent:event]
+    // 这样 super 不会启动它自己的 minimumPressDuration timer，不会跟我们竞争
 }
 
+// ========== 手指移动 → 超范围 cancel timer + Fail ==========
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    if (_ttg_fired) {
-        [super touchesMoved:touches withEvent:event];
-        return;
-    }
-    
+    if (_ttg_fired) return; // 已经 Began 了就不管移动了
     UITouch *touch = touches.anyObject;
     CGPoint p = [touch locationInView:self.view];
     CGFloat dx = p.x - _ttg_startPoint.x;
     CGFloat dy = p.y - _ttg_startPoint.y;
-    CGFloat maxDist = self.allowableMovement + 2;
-    if ((dx*dx + dy*dy) > maxDist*maxDist) {
-        // 超了移动范围 → cancel 自研 timer
-        if (_ttg_timer_block) {
-            dispatch_block_cancel(_ttg_timer_block);
-            _ttg_timer_block = nil;
-        }
-        NSLog(@"[TTG] 👆 touchesMoved 超出 allowableMovement → Fail");
+    CGFloat maxD = TTG_SINGLE_MOVE_LIMIT + 2;
+    if ((dx*dx + dy*dy) > maxD*maxD) {
+        [self _ttg_cancelTimer];
+        NSLog(@"[TTG] 👆 touchesMoved 超范围(%.1fpx) → Fail", sqrtf(dx*dx + dy*dy));
         self.state = UIGestureRecognizerStateFailed;
     }
-    [super touchesMoved:touches withEvent:event];
+}
+
+// ========== 第二指按下 → cancel 单指 timer + Fail ==========
+- (void)touchesAdded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    NSLog(@"[TTG] 👆 touchesAdded → %lu 指了 → cancel 单指 timer", (unsigned long)touches.count);
+    [self _ttg_cancelTimer];
+    self.state = UIGestureRecognizerStateFailed;
+}
+
+// ========== 手指离开，只剩 1 指或 0 指 ==========
+- (void)touchesRemoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    UITouch *t = touches.anyObject;
+    CGPoint p = [t locationInView:self.view];
+    CGFloat dx = p.x - _ttg_startPoint.x;
+    CGFloat dy = p.y - _ttg_startPoint.y;
+    CGFloat maxD = TTG_SINGLE_MOVE_LIMIT + 2;
+    if ((dx*dx + dy*dy) > maxD*maxD) {
+        [self _ttg_cancelTimer];
+        NSLog(@"[TTG] 👆 touchesMoved 超范围 → Fail");
+        self.state = UIGestureRecognizerStateFailed;
+    }
 }
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    if (_ttg_timer_block) {
-        dispatch_block_cancel(_ttg_timer_block);
-        _ttg_timer_block = nil;
-    }
-    [super touchesEnded:touches withEvent:event];
+    NSLog(@"[TTG] 👆 touchesEnded → fired=%d", _ttg_fired);
+    [self _ttg_cancelTimer];
+    // 如果已经 Began 过，正常 End；还没 Began 就松手 → Fail
+    if (_ttg_fired) self.state = UIGestureRecognizerStateEnded;
+    else self.state = UIGestureRecognizerStateFailed;
 }
 
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    if (_ttg_timer_block) {
-        dispatch_block_cancel(_ttg_timer_block);
-        _ttg_timer_block = nil;
-    }
-    [super touchesCancelled:touches withEvent:event];
+    NSLog(@"[TTG] 👆 touchesCancelled → Fail");
+    [self _ttg_cancelTimer];
+    self.state = UIGestureRecognizerStateCancelled;
 }
 
 - (void)reset {
+    NSLog(@"[TTG] 👆 reset");
+    [self _ttg_cancelTimer];
+    _ttg_fired = NO;
+    [super reset]; // reset 里必须调 super，iOS 要求
+}
+
+- (void)_ttg_cancelTimer {
     if (_ttg_timer_block) {
         dispatch_block_cancel(_ttg_timer_block);
         _ttg_timer_block = nil;
     }
-    _ttg_fired = NO;
-    [super reset];
 }
 
 @end
@@ -905,40 +928,44 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
 }
 @end
 
-// 手势装到 window 上（最顶层，不会被内部子视图盖住）
-static NSHashTable *_ttg_windowsWithGesture = nil;
-
-@implementation TTGLongPressHandler
+@implementation TTGLongPressHandler {
+    BOOL _panelShowing;
+}
 + (instancetype)shared {
     static TTGLongPressHandler *inst;
     static dispatch_once_t once;
     dispatch_once(&once, ^{ inst = [[TTGLongPressHandler alloc] init]; });
     return inst;
 }
-// 单指长按 → 动作面板（保存视频/图片/音乐）
+
+// 单指长按 → 动作面板
 - (void)handleSingleLongPress:(UILongPressGestureRecognizer *)gr {
     if (gr.state == UIGestureRecognizerStateBegan) {
-        NSLog(@"[TTG] ✅ 👆 单指长按 BEGAN → Kill 所有其他长按 → 弹动作面板");
-        if ([gr.view isKindOfClass:[UIWindow class]]) {
-            TTGKillAllLongPressInViewExcept(gr.view, gr);
-        }
+        if (_panelShowing) { NSLog(@"[TTG] 🔒 已有面板显示中 → 忽略单指"); return; }
+        _panelShowing = YES;
+        NSLog(@"[TTG] ✅ 👆 单指长按 BEGAN → 弹动作面板");
         TTGActionPanelView *panel = [[TTGActionPanelView alloc] init];
+        // 面板 dismiss 时解锁 —— 通过 NSNotification 监听？或者直接在 show 里处理
+        // 简单做法：show 后 3s 自动解锁（面板通常不会超过 3s 还开着没关）
         [panel show];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            self->_panelShowing = NO;
+        });
     }
 }
 
+// 双指长按 → 设置面板
 - (void)handleDoubleLongPress:(UILongPressGestureRecognizer *)gr {
     if (gr.state != UIGestureRecognizerStateBegan) return;
-    NSLog(@"[TTG] ✅ ✌️ 双指长按 BEGAN → Kill 所有其他长按 → 弹设置面板");
-    if ([gr.view isKindOfClass:[UIWindow class]]) {
-        TTGKillAllLongPressInViewExcept(gr.view, gr);
-    }
+    if (_panelShowing) { NSLog(@"[TTG] 🔒 已有面板显示中 → 忽略双指"); return; }
+    _panelShowing = YES;
+    NSLog(@"[TTG] ✅ ✌️ 双指长按 BEGAN → 弹设置面板");
     UIViewController *topVC = TTGTopVC();
-    if (!topVC) return;
+    if (!topVC) { _panelShowing = NO; return; }
     Class cls = NSClassFromString(@"TTGSettingsViewController");
-    if (!cls) { NSLog(@"[TTG] ❌ TTGSettingsViewController 未找到"); return; }
+    if (!cls) { _panelShowing = NO; NSLog(@"[TTG] ❌ TTGSettingsViewController 未找到"); return; }
     UIViewController *vc = [[cls alloc] init];
-    if (!vc) return;
+    if (!vc) { _panelShowing = NO; return; }
     vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
     vc.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
     vc.view.alpha = 0;
@@ -946,66 +973,68 @@ static NSHashTable *_ttg_windowsWithGesture = nil;
         [UIView animateWithDuration:0.2 animations:^{
             vc.view.alpha = 1;
         }];
+        // 设置面板关闭时解锁
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            self->_panelShowing = NO;
+        });
     }];
 }
 
-// MARK: - UIGestureRecognizerDelegate
-// window 上的手势（我们自己装的）互相不 require，否则死锁
-// 只让子视图（TikTok 内部）的长按/tap require 我们失败
-// （不返回 YES 给 shouldRecognizeSimultaneously，iOS 默认互斥 → 我们到点立刻 Began）
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
-shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    // 排除：other 也在 window 上（也是我们装的），不互相 require
-    if (otherGestureRecognizer.view && [otherGestureRecognizer.view isKindOfClass:[UIWindow class]]) {
-        return NO;
-    }
-    // 只让子视图的长按/tap require 我们失败（我们 0.4s 先触发，早于 TikTok 的 0.5s）
-    // pan/swipe/pinch 一律放行，保证上下滑动正常
-    if ([otherGestureRecognizer isKindOfClass:[UILongPressGestureRecognizer class]] ||
-        [otherGestureRecognizer isKindOfClass:[UITapGestureRecognizer class]]) {
-        return YES;
-    }
-    return NO;
-}
 @end
 
 static void TTGInstallGesturesOnWindow(UIWindow *win) {
     if (!win) return;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        _ttg_windowsWithGesture = [NSHashTable weakObjectsHashTable];
-    });
-    if ([_ttg_windowsWithGesture containsObject:win]) return;
 
-    // 单指长按 —— 用完全自定义的手势类，自己控 timer
-    // 不跟系统 UILongPressGestureRecognizer 有任何依赖，绕过所有 require/simultaneous 问题
-    // 单指长按（自定义类 TTGSinglePressRecognizer）
-    TTGSinglePressRecognizer *single = [[TTGSinglePressRecognizer alloc]
-        initWithTarget:[TTGLongPressHandler shared] action:@selector(handleSingleLongPress:)];
-    single.minimumPressDuration = 0.4;
-    single.numberOfTouchesRequired = 1;
-    single.allowableMovement = 10;
-    single.cancelsTouchesInView = YES;
-    single.delaysTouchesBegan = NO;
-    single.delaysTouchesEnded = NO;
-    // 零 delegate、零 require、零 simultaneous
+    // 先检查：我们的单指/双指手势是否已经真的在 window 上
+    BOOL hasSingle = NO, hasDouble = NO;
+    for (UIGestureRecognizer *gr in win.gestureRecognizers) {
+        if ([gr isKindOfClass:[TTGSinglePressRecognizer class]]) hasSingle = YES;
+        if ([gr isKindOfClass:[UILongPressGestureRecognizer class]] &&
+            ![gr isKindOfClass:[TTGSinglePressRecognizer class]] &&
+            ((UILongPressGestureRecognizer *)gr).numberOfTouchesRequired == 2) hasDouble = YES;
+    }
 
-    // 双指长按（系统类）
-    UILongPressGestureRecognizer *dbl = [[UILongPressGestureRecognizer alloc]
-        initWithTarget:[TTGLongPressHandler shared] action:@selector(handleDoubleLongPress:)];
-    dbl.minimumPressDuration = 0.5;
-    dbl.numberOfTouchesRequired = 2;
-    dbl.allowableMovement = 30;
-    dbl.cancelsTouchesInView = YES;
-    dbl.delaysTouchesBegan = NO;
-    dbl.delaysTouchesEnded = NO;
+    if (hasSingle && hasDouble) {
+        // 两个都在 → 确保没被 disable，然后跳过
+        for (UIGestureRecognizer *gr in win.gestureRecognizers) {
+            if ([gr isKindOfClass:[TTGSinglePressRecognizer class]]) gr.enabled = YES;
+            if ([gr isKindOfClass:[UILongPressGestureRecognizer class]] &&
+                ![gr isKindOfClass:[TTGSinglePressRecognizer class]] &&
+                ((UILongPressGestureRecognizer *)gr).numberOfTouchesRequired == 2) gr.enabled = YES;
+        }
+        return;
+    }
 
-    [win addGestureRecognizer:single];
-    [win addGestureRecognizer:dbl];
-    [_ttg_windowsWithGesture addObject:win];
-    // 装完立即 disable 子视图已有的长按
+    // 缺哪个装哪个（不要重复装）
+    if (!hasSingle) {
+        TTGSinglePressRecognizer *single = [[TTGSinglePressRecognizer alloc]
+            initWithTarget:[TTGLongPressHandler shared] action:@selector(handleSingleLongPress:)];
+        single.minimumPressDuration = 0.4;
+        single.numberOfTouchesRequired = 1;
+        single.allowableMovement = 25;
+        single.cancelsTouchesInView = YES;
+        single.delaysTouchesBegan = NO;
+        single.delaysTouchesEnded = NO;
+        [win addGestureRecognizer:single];
+        NSLog(@"[TTG] ✋ 单指长按手势已装到 window");
+    }
+
+    if (!hasDouble) {
+        UILongPressGestureRecognizer *dbl = [[UILongPressGestureRecognizer alloc]
+            initWithTarget:[TTGLongPressHandler shared] action:@selector(handleDoubleLongPress:)];
+        dbl.minimumPressDuration = 0.5;
+        dbl.numberOfTouchesRequired = 2;
+        dbl.allowableMovement = 30;
+        dbl.cancelsTouchesInView = YES;
+        dbl.delaysTouchesBegan = NO;
+        dbl.delaysTouchesEnded = NO;
+        [win addGestureRecognizer:dbl];
+        NSLog(@"[TTG] ✋ 双指长按手势已装到 window");
+    }
+
+    // 装完立即 disable 所有子视图长按
     TTGDisableAllChildLongPresses();
-    NSLog(@"[TTG] ✋ 手势已装到 window: %@ → 已 disable 子视图长按", win);
+    NSLog(@"[TTG] ✋ window 手势就绪 → 已 disable 子视图长按");
 }
 
 #pragma mark - 设置页（液态玻璃）
