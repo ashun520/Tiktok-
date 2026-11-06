@@ -1918,13 +1918,14 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     NSLog(@"[TTG] 🎬 TTGSettingsViewController viewDidLoad 开始 — self=%@", self);
-    self.view.backgroundColor = [UIColor colorWithWhite:0.97 alpha:1];
-    self.view.opaque = YES;
+    @try {
+    self.view.backgroundColor = [UIColor clearColor];  // OverFullScreen 需要透明！
+    self.view.opaque = NO;
 
-    // 卡片背景覆盖全屏（因为 FullScreen present 独占屏幕）
+    // 半透明黑色遮罩（dimming）
     _dimmingView = [[UIView alloc] initWithFrame:self.view.bounds];
     _dimmingView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    _dimmingView.backgroundColor = [UIColor colorWithWhite:0.97 alpha:1];  // 实色，不再需要透明遮罩
+    _dimmingView.backgroundColor = [UIColor colorWithWhite:0 alpha:0.4];
     [self.view addSubview:_dimmingView];
 
     // 悬浮卡片（居中，不是全屏）
@@ -2099,6 +2100,9 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     footer.textAlignment = NSTextAlignmentCenter;
     footer.tag = 104;
     [_card addSubview:footer];
+    } @catch (NSException *ex) {
+        NSLog(@"[TTG] ❌ viewDidLoad CRASH! %@: %@", ex.name, ex.reason);
+    }
 }
 
 - (void)viewDidLayoutSubviews {
