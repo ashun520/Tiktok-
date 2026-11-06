@@ -4,8 +4,6 @@
 #import <Photos/Photos.h>
 #import <objc/message.h>
 
-@class TTGSettingsViewController;
-
 #pragma mark - 全局开关
 
 static BOOL noads = YES;
@@ -478,7 +476,9 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
 }
 
 - (void)ttgShowSettings {
-    TTGSettingsViewController *vc = [[TTGSettingsViewController alloc] init];
+    Class cls = NSClassFromString(@"TTGSettingsViewController");
+    if (!cls) return;
+    UIViewController *vc = [[cls alloc] init];
     vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
     vc.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
     UIViewController *top = TTGTopVC();
