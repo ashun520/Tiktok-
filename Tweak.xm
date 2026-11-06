@@ -13,7 +13,7 @@ static void TTGCopyShareLink(void);
 static void TTGDownloadMusic(void);
 static void TTGDownloadLivePhoto(void);
 
-@class TTGSettingsViewController;
+@class TTGSettingsPanelView;
 
 static void TTGInstallGesturesOnWindow(UIWindow *win);
 
@@ -345,6 +345,10 @@ static NSDictionary *TTGRegionInfo(NSString *code) {
 // 获取当前选中地区的显示名（带 emoji）
 static NSString *TTGRegionDisplayName(void) {
     return TTGRegionInfo(ttgSelectedRegion)[@"name"] ?: @"🇺🇸 美国";
+}
+
+static NSString *TTGRegionDisplayNameForCode(NSString *code) {
+    return TTGRegionInfo(code)[@"name"] ?: code;
 }
 
 // 应用地区切换（保存到 UserDefaults + 重新 hook CTCarrier + NSLocale）
@@ -1371,58 +1375,48 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
     }
 }
 
-// 全局强持有设置面板 VC（addSubview 到 window 时必须强持有防 ARC 释放）
-static UIViewController *_ttg_settingsVC = nil;
+// 全局强持有设置面板（addSubview 到 window 时必须强持有防 ARC 释放）
+static id _ttg_settingsPanel = nil;
 
-// 双指长按 → 设置面板
+// 双指长按 → 设置面板（纯 UIView addSubview 到 window，跟 TTGActionPanelView 一样！）
 - (void)handleDoubleLongPress:(UILongPressGestureRecognizer *)gr {
     if (gr.state == UIGestureRecognizerStateBegan) {
         if (_panelShowing) { NSLog(@"[TTG] 🔒 面板已在显示 → 忽略双指"); return; }
         _panelShowing = YES;
-        NSLog(@"[TTG] ✅ ✌️ 双指长按 BEGAN → 弹设置面板");
+        NSLog(@"[TTG] ✅ ✌️ 双指长按 BEGAN → 创建 TTGSettingsPanelView");
 
-        // 🔴 关键！之前用 presentViewController OverFullScreen —— TikTok 内部会截断触摸事件！
-        // TTGActionPanelView（功能面板）能点，因为它是直接 addSubview 到 window 的。
-        // 所以这里也改成 addSubview 到 window，跟功能面板一模一样的方式！
-
-        TTGSetWindowLongPressEnabled(NO);
-
-        Class cls = NSClassFromString(@"TTGSettingsViewController");
-        if (!cls) { TTGSetWindowLongPressEnabled(YES); _panelShowing = NO; return; }
-        _ttg_settingsVC = [[cls alloc] init];
-        if (!_ttg_settingsVC) { TTGSetWindowLongPressEnabled(YES); _panelShowing = NO; return; }
-
-        UIWindow *win = TTGFrontmostWindow();
-        if (!win) { TTGSetWindowLongPressEnabled(YES); _ttg_settingsVC = nil; _panelShowing = NO; return; }
-
-        // 手动触发 viewDidLoad / viewDidLayoutSubviews（不走 present 流程不会自动调）
-        // access vc.view 会自动触发 viewDidLoad
-        UIView *vcView = _ttg_settingsVC.view;
-        vcView.frame = win.bounds;
-        vcView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        vcView.tag = 9999;
-        vcView.alpha = 0;
-
-        [win addSubview:vcView];
-
-        // 手动 layout
-        [_ttg_settingsVC viewDidLayoutSubviews];
-
-        // 淡入动画
-        [UIView animateWithDuration:0.25 animations:^{
-            vcView.alpha = 1;
-        }];
-
-        NSLog(@"[TTG] ✅ 设置面板已 addSubview 到 window，vc=%@", _ttg_settingsVC);
+        Class panelClass = NSClassFromString(@"TTGSettingsPanelView");
+        if (!panelClass) { _panelShowing = NO; return; }
+        _ttg_settingsPanel = [[panelClass alloc] init];
+        if (!_ttg_settingsPanel) { _panelShowing = NO; return; }
+        [_ttg_settingsPanel show];
     }
     if (gr.state == UIGestureRecognizerStateEnded || gr.state == UIGestureRecognizerStateCancelled || gr.state == UIGestureRecognizerStateFailed) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             self->_panelShowing = NO;
+            _ttg_settingsPanel = nil;  // 如果已 dismiss，释放引用
         });
     }
 }
 
 @end
+
+// 递归清除 view 和所有子视图上的手势（关键！TikTok 内部注入的手势会吞触摸）
+static void TTGRemoveAllGesturesInView(UIView *v) {
+    if (!v) return;
+    // 先递归子视图
+    for (UIView *sub in v.subviews) {
+        TTGRemoveAllGesturesInView(sub);
+    }
+    // 移除当前 view 的所有手势
+    if (v.gestureRecognizers.count > 0) {
+        for (UIGestureRecognizer *gr in v.gestureRecognizers) {
+            [v removeGestureRecognizer:gr];
+        }
+    }
+    // 强制开启 userInteractionEnabled
+    v.userInteractionEnabled = YES;
+}
 
 static void TTGInstallGesturesOnWindow(UIWindow *win) {
     if (!win) return;
@@ -1926,31 +1920,75 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 
 #pragma mark - 设置页（液态玻璃）
 
-@interface TTGSettingsViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+
+@interface TTGSettingsPanelView : UIView
+- (void)show;
+- (void)dismissSelf;
 @end
 
-@implementation TTGSettingsViewController {
+@implementation TTGSettingsPanelView {
     NSArray *_rows;
-    NSMutableArray *_rowViews;   // 每行一个 UIView 容器（替代 UITableView）
+    NSMutableArray *_rowViews;
     UIView *_dimmingView;
     UIView *_card;
-    UINavigationController *_detailNav;  // 强持有详情页 nav，防止 vc 被释放
 }
 
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    NSLog(@"[TTG] 🎬 TTGSettingsViewController viewDidLoad 开始 — self=%@", self);
-    @try {
-    self.view.backgroundColor = [UIColor clearColor];  // OverFullScreen 需要透明！
-    self.view.opaque = NO;
+- (instancetype)init {
+    self = [super initWithFrame:[UIScreen mainScreen].bounds];
+    if (self) {
+        self.backgroundColor = [UIColor clearColor];
+        self.opaque = NO;
+        [self setup];
+    }
+    return self;
+}
 
-    // 半透明黑色遮罩（dimming）
-    _dimmingView = [[UIView alloc] initWithFrame:self.view.bounds];
-    _dimmingView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+- (void)show {
+    // 🔴 关键！展示前先 remove window 上的手势
+    TTGSetWindowLongPressEnabled(NO);
+
+    UIWindow *win = TTGFrontmostWindow();
+    if (!win) { TTGSetWindowLongPressEnabled(YES); return; }
+    self.frame = win.bounds;
+    self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [win addSubview:self];
+
+    // 弹出动画
+    _dimmingView.alpha = 0;
+    _card.transform = CGAffineTransformMakeScale(0.85, 0.85);
+    _card.alpha = 0;
+    [UIView animateWithDuration:0.35 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0.4 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        self->_dimmingView.alpha = 1;
+        self->_card.transform = CGAffineTransformIdentity;
+        self->_card.alpha = 1;
+    } completion:nil];
+
+    NSLog(@"[TTG] ✅ 设置面板已 addSubview 到 window");
+}
+
+- (void)dismissSelf {
+    NSLog(@"[TTG] 🔒 dismissSelf → removeFromSuperview");
+    [UIView animateWithDuration:0.2 animations:^{
+        self->_dimmingView.alpha = 0;
+        self->_card.transform = CGAffineTransformMakeScale(0.9, 0.9);
+        self->_card.alpha = 0;
+    } completion:^(BOOL done) {
+        [self removeFromSuperview];
+        TTGSetWindowLongPressEnabled(YES);
+        NSLog(@"[TTG] 🔒 dismissSelf → 手势已恢复");
+    }];
+}
+
+- (void)setup {
+    NSLog(@"[TTG] 🎬 TTGSettingsPanelView setup");
+
+    // 遮罩
+    _dimmingView = [[UIView alloc] init];
     _dimmingView.backgroundColor = [UIColor colorWithWhite:0 alpha:0.4];
-    [self.view addSubview:_dimmingView];
+    _dimmingView.userInteractionEnabled = YES;
+    [self addSubview:_dimmingView];
 
-    // 悬浮卡片（居中，不是全屏）
+    // 卡片
     _card = [[UIView alloc] init];
     _card.backgroundColor = [UIColor clearColor];
     _card.layer.cornerRadius = 22;
@@ -1959,23 +1997,23 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     _card.layer.shadowOffset = CGSizeMake(0, 10);
     _card.layer.shadowRadius = 28;
     _card.clipsToBounds = NO;
-    [self.view addSubview:_card];
-    // 磨砂背景层（加在 card 最底层，子视图会自动在它上面）
-    UIBlurEffectStyle bstyle;
-    if (@available(iOS 13.0, *)) bstyle = UIBlurEffectStyleLight;
-    else bstyle = UIBlurEffectStyleLight;
-    UIBlurEffect *be = [UIBlurEffect effectWithStyle:bstyle];
+    _card.userInteractionEnabled = YES;
+    [self addSubview:_card];
+
+    // 磨砂背景
+    UIBlurEffect *be = [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
     UIVisualEffectView *bvg = [[UIVisualEffectView alloc] initWithEffect:be];
     bvg.tag = 999;
     bvg.layer.cornerRadius = 22;
     bvg.clipsToBounds = YES;
+    [_card addSubview:bvg];
+
     UIView *cardTint = [[UIView alloc] init];
     cardTint.backgroundColor = [UIColor colorWithWhite:1 alpha:0.12];
     cardTint.tag = 998;
-    [_card addSubview:bvg];
     [_card addSubview:cardTint];
 
-    // 顶部标题区（卡片内部）
+    // 标题
     UILabel *titleLabel = [[UILabel alloc] init];
     titleLabel.text = @"插件设置";
     titleLabel.font = [UIFont boldSystemFontOfSize:20];
@@ -1983,7 +2021,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     titleLabel.tag = 101;
     [_card addSubview:titleLabel];
 
-    // 关闭按钮（卡片右上角）
+    // 关闭按钮（用 UIButton addTarget，不走手势）
     UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     [closeBtn setTitle:@"✕" forState:UIControlStateNormal];
     closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:14];
@@ -2005,24 +2043,22 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     [allOnBtn addTarget:self action:@selector(toggleAllOn) forControlEvents:UIControlEventTouchUpInside];
     [_card addSubview:allOnBtn];
 
-    // 数据（两种类型：switch 行带 ptr；action 行带 action key）
-    NSMutableArray *rows = [NSMutableArray array];
-    [rows addObject:@{@"title": @"去广告",       @"ptr": [NSValue valueWithPointer:(const void *)&noads]}];
-    [rows addObject:@{@"title": @"无水印下载",    @"ptr": [NSValue valueWithPointer:(const void *)&downloadWithoutWatermark]}];
-    [rows addObject:@{@"title": @"自动连播下一个", @"ptr": [NSValue valueWithPointer:(const void *)&autoPlayNextVideo]}];
-    [rows addObject:@{@"title": @"🌍 切换地区",   @"action": @"region"}];  // 特殊行，点击弹选择列表
-    [rows addObject:@{@"title": @"强制显示进度条", @"ptr": [NSValue valueWithPointer:(const void *)&showProgressBar]}];
-    [rows addObject:@{@"title": @"隐藏视频上的UI", @"ptr": [NSValue valueWithPointer:(const void *)&canHideUI]}];
-    [rows addObject:@{@"title": @"画中画（PiP）", @"ptr": [NSValue valueWithPointer:(const void *)&enablePIP]}];
-    [rows addObject:@{@"title": @"后台继续播放",   @"ptr": [NSValue valueWithPointer:(const void *)&enableBackgroundPlay]}];
-    [rows addObject:@{@"title": @"安全检测绕过",   @"ptr": [NSValue valueWithPointer:(const void *)&enableBypass]}];
-    [rows addObject:@{@"title": @"🎛️ 底栏设置",    @"action": @"tabbar"}];      // 点击进详情（滑块+悬浮）
-    [rows addObject:@{@"title": @"🔝 隐藏顶栏元素", @"action": @"topbar"}];      // 点击进详情（子选项）
-    _rows = rows;
+    // 数据
+    _rows = @[
+        @{@"title": @"去广告",       @"ptr": [NSValue valueWithPointer:(const void *)&noads]},
+        @{@"title": @"无水印下载",    @"ptr": [NSValue valueWithPointer:(const void *)&downloadWithoutWatermark]},
+        @{@"title": @"自动连播下一个", @"ptr": [NSValue valueWithPointer:(const void *)&autoPlayNextVideo]},
+        @{@"title": @"🌍 切换地区",   @"action": @"region"},
+        @{@"title": @"强制显示进度条", @"ptr": [NSValue valueWithPointer:(const void *)&showProgressBar]},
+        @{@"title": @"隐藏视频上的UI", @"ptr": [NSValue valueWithPointer:(const void *)&canHideUI]},
+        @{@"title": @"画中画（PiP）", @"ptr": [NSValue valueWithPointer:(const void *)&enablePIP]},
+        @{@"title": @"后台继续播放",   @"ptr": [NSValue valueWithPointer:(const void *)&enableBackgroundPlay]},
+        @{@"title": @"安全检测绕过",   @"ptr": [NSValue valueWithPointer:(const void *)&enableBypass]},
+        @{@"title": @"🎛️ 底栏设置",    @"action": @"tabbar"},
+        @{@"title": @"🔝 隐藏顶栏元素", @"action": @"topbar"},
+    ];
 
-    // ===== 彻底抛弃 UITableView！改用手动行 UIView 容器 =====
-    // UITableView 内部的 UITapGestureRecognizer 会吞掉 UISwitch 的触摸
-    // 我们用最干净的方式：每行一个 UIView，UISwitch 直接 addSubview 到 rowView
+    // 创建行 UIView
     _rowViews = [NSMutableArray array];
     for (int i = 0; i < (int)_rows.count; i++) {
         NSDictionary *row = _rows[i];
@@ -2032,13 +2068,13 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         rowContainer.tag = 1000 + i;
         rowContainer.userInteractionEnabled = YES;
 
-        // 分隔线（每行底部）
+        // 分隔线
         UIView *sep = [[UIView alloc] init];
         sep.backgroundColor = [UIColor colorWithWhite:0 alpha:0.08];
         sep.tag = 2000 + i;
         [rowContainer addSubview:sep];
 
-        // 标题（不吞触摸）
+        // 标题
         UILabel *titleLbl = [[UILabel alloc] init];
         titleLbl.text = row[@"title"];
         titleLbl.font = [UIFont systemFontOfSize:15];
@@ -2048,17 +2084,16 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         [rowContainer addSubview:titleLbl];
 
         if (row[@"ptr"]) {
-            // Switch 行 — UISwitch 直接 addSubview 到 rowContainer
+            // Switch 行
             BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
             UISwitch *sw = [[UISwitch alloc] init];
             sw.on = flag ? *flag : NO;
             if (@available(iOS 13.0, *)) sw.onTintColor = [UIColor systemGreenColor];
             sw.userInteractionEnabled = YES;
-            // 不用 tag 存 index — switch 所在的 rowView.tag = 1000+i，通过 superview 反推
             [sw addTarget:self action:@selector(switchToggled:) forControlEvents:UIControlEventValueChanged];
             [rowContainer addSubview:sw];
         } else if (row[@"action"]) {
-            // Action 行 — 右指示 + 可点区域
+            // Action 行 - 箭头
             UILabel *arrow = [[UILabel alloc] init];
             arrow.text = @"›";
             arrow.font = [UIFont systemFontOfSize:22 weight:UIFontWeightThin];
@@ -2067,7 +2102,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
             arrow.tag = 5000 + i;
             [rowContainer addSubview:arrow];
 
-            // 右侧详情文字（可选）
+            // 详情文字
             NSString *detailText = nil;
             if ([row[@"action"] isEqualToString:@"region"]) {
                 detailText = TTGRegionDisplayName();
@@ -2099,22 +2134,19 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
                 [rowContainer addSubview:detail];
             }
 
-            // Action 行整体可点
-            UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
-                initWithTarget:self action:@selector(actionRowTapped:)];
-            tap.cancelsTouchesInView = NO;
-            tap.delaysTouchesBegan = NO;
-            tap.delaysTouchesEnded = NO;
-            rowContainer.userInteractionEnabled = YES;
-            [rowContainer addGestureRecognizer:tap];
+            // Action 行用 UIButton 覆盖整行（addTarget 不走手势！）
+            UIButton *rowBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+            rowBtn.backgroundColor = [UIColor clearColor];
+            rowBtn.tag = 7000 + i;
+            [rowBtn addTarget:self action:@selector(actionRowTapped:) forControlEvents:UIControlEventTouchUpInside];
+            [rowContainer addSubview:rowBtn];
         }
 
         [_card addSubview:rowContainer];
         [_rowViews addObject:rowContainer];
     }
-    NSLog(@"[TTG] ✅ 已创建 %lu 个手动行 UIView（彻底绕开 UITableView）", (unsigned long)_rowViews.count);
 
-    // 底部署名（卡片内）
+    // 底部署名
     UILabel *footer = [[UILabel alloc] init];
     footer.text = @"by ashun520  ·  LCSign 注入版";
     footer.font = [UIFont systemFontOfSize:10.5];
@@ -2122,17 +2154,13 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     footer.textAlignment = NSTextAlignmentCenter;
     footer.tag = 104;
     [_card addSubview:footer];
-    } @catch (NSException *ex) {
-        NSLog(@"[TTG] ❌ viewDidLoad CRASH! %@: %@", ex.name, ex.reason);
-    }
 }
 
-- (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];
-    CGRect b = self.view.bounds;
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGRect b = self.bounds;
     _dimmingView.frame = b;
 
-    // 卡片尺寸：宽 = 屏宽 - 32，高 = 标题区(70) + 9行(48*9) + 底部署名(32) = 534
     CGFloat cardW = MIN(b.size.width - 32, 420);
     CGFloat rowH = 48;
     CGFloat tableH = rowH * _rows.count;
@@ -2141,49 +2169,39 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     CGFloat cardH = headerH + tableH + footerH;
 
     CGFloat topInset = TTGStatusBarHeight();
-    CGFloat availableTop = topInset + 20;
-    CGFloat availableBottom = b.size.height - (b.size.height - (_card.frame.origin.y + cardH)) - 20;  // not used
-
-    // 卡片居中，但上半部分优先（避开状态栏，也不碰到底部 tab）
     CGFloat maxTop = topInset + 60;
     CGFloat minBottom = 60;
     CGFloat idealTop = (b.size.height - cardH) / 2;
     CGFloat cardTop = MAX(maxTop, MIN(idealTop, b.size.height - cardH - minBottom));
-    if (cardTop > b.size.height - cardH - minBottom) {
-        cardTop = b.size.height - cardH - minBottom;
-    }
+    if (cardTop > b.size.height - cardH - minBottom) cardTop = b.size.height - cardH - minBottom;
     CGFloat cardX = (b.size.width - cardW) / 2;
     _card.frame = CGRectMake(cardX, cardTop, cardW, cardH);
-    // 同步磨砂背景层
+
+    // 磨砂背景层
     UIVisualEffectView *bvg = (UIVisualEffectView *)[_card viewWithTag:999];
     UIView *cardTint = (UIView *)[_card viewWithTag:998];
     bvg.frame = _card.bounds;
     cardTint.frame = _card.bounds;
 
-    // 卡片内部子视图
-    UIView *card = _card;
     CGFloat W = cardW;
-
-    UILabel *titleLabel = (UILabel *)[card viewWithTag:101];
-    UIButton *closeBtn = (UIButton *)[card viewWithTag:102];
-    UIButton *allOnBtn = (UIButton *)[card viewWithTag:103];
-    UILabel *footer = (UILabel *)[card viewWithTag:104];
+    UILabel *titleLabel = (UILabel *)[_card viewWithTag:101];
+    UIButton *closeBtn = (UIButton *)[_card viewWithTag:102];
+    UIButton *allOnBtn = (UIButton *)[_card viewWithTag:103];
+    UILabel *footer = (UILabel *)[_card viewWithTag:104];
 
     titleLabel.frame = CGRectMake(18, 16, W - 90, 26);
     closeBtn.frame = CGRectMake(W - 40, 14, 26, 26);
     allOnBtn.frame = CGRectMake(18, 46, 84, 22);
 
-    // 手动布局每行 UIView（替代 tableView.frame）
     for (int i = 0; i < (int)_rowViews.count; i++) {
         UIView *rowView = _rowViews[i];
         CGFloat rowY = headerH + i * rowH;
         rowView.frame = CGRectMake(0, rowY, W, rowH);
 
-        // 标题
         UILabel *tLbl = (UILabel *)[rowView viewWithTag:3000 + i];
         tLbl.frame = CGRectMake(18, 0, W - 120, rowH);
 
-        // switch 行 — 遍历 subviews 找 UISwitch
+        // switch
         UISwitch *sw = nil;
         for (UIView *sv in rowView.subviews) {
             if ([sv isKindOfClass:[UISwitch class]]) { sw = (UISwitch *)sv; break; }
@@ -2193,18 +2211,19 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
             sw.frame = CGRectMake(W - 18 - sz.width, (rowH - sz.height) / 2, sz.width, sz.height);
         }
 
-        // action 行的箭头
+        // action 行
         UILabel *arrow = (UILabel *)[rowView viewWithTag:5000 + i];
         if (arrow) arrow.frame = CGRectMake(W - 24, 0, 18, rowH);
 
-        // action 行的详情文字
         UILabel *detail = (UILabel *)[rowView viewWithTag:6000 + i];
         if (detail) {
             CGSize ds = [detail sizeThatFits:CGSizeMake(W - 140, rowH)];
             detail.frame = CGRectMake(W - 24 - ds.width - 6, 0, ds.width, rowH);
         }
 
-        // 分隔线
+        UIButton *rowBtn = (UIButton *)[rowView viewWithTag:7000 + i];
+        if (rowBtn) rowBtn.frame = rowView.bounds;
+
         UIView *sep = (UIView *)[rowView viewWithTag:2000 + i];
         sep.frame = CGRectMake(18, rowH - 0.5, W - 36, 0.5);
     }
@@ -2212,46 +2231,75 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     footer.frame = CGRectMake(0, headerH + tableH + 4, W, 22);
 }
 
-- (void)viewDidAppear:(BOOL)animated {
-    [super viewDidAppear:animated];
-    // 弹出动画：从缩放到正常
-    _card.transform = CGAffineTransformMakeScale(0.85, 0.85);
-    _card.alpha = 0;
-    [UIView animateWithDuration:0.35 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0.4 options:UIViewAnimationOptionCurveEaseOut animations:^{
-        self->_card.transform = CGAffineTransformIdentity;
-        self->_card.alpha = 1;
-        self->_dimmingView.alpha = 1;
-    } completion:nil];
-}
+- (void)switchToggled:(UISwitch *)sw {
+    UIView *rowView = sw.superview;
+    int idx = (int)rowView.tag - 1000;
+    if (idx < 0 || idx >= (int)_rows.count) return;
+    NSDictionary *row = _rows[idx];
+    BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
+    if (flag) *flag = sw.isOn;
+    NSLog(@"[TTG] 🎛️ switchToggled: idx=%d on=%d title=%@", idx, sw.isOn, row[@"title"]);
 
-- (void)dismissSelf {
-    NSLog(@"[TTG] 🔒 dismissSelf → removeFromSuperview 设置面板");
-    [UIView animateWithDuration:0.2 animations:^{
-        self.view.alpha = 0;
-    } completion:^(BOOL done) {
-        [self.view removeFromSuperview];
-        // 释放 static 引用（必须在 removeFromSuperview 之后）
-        _ttg_settingsVC = nil;
-        // 恢复 window 上的手势
-        TTGSetWindowLongPressEnabled(YES);
-        NSLog(@"[TTG] 🔒 dismissSelf → 已释放 + 手势已恢复");
-    }];
-}
-
-// 兜底：系统层面消失时也做清理（不走 present 流程所以这个基本不会触发，留着保险）
-- (void)viewDidDisappear:(BOOL)animated {
-    [super viewDidDisappear:animated];
-    if (!_ttg_settingsVC || _ttg_settingsVC == self) {
-        // 如果是通过别的方式消失的（比如系统），也清理
-        [self.view removeFromSuperview];
-        _ttg_settingsVC = nil;
-        TTGSetWindowLongPressEnabled(YES);
+    // 振动反馈
+    if (@available(iOS 10.0, *)) {
+        UIImpactFeedbackGenerator *fb = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+        [fb impactOccurred];
     }
+
+    [self refreshActionRowDetails];
+}
+
+- (void)actionRowTapped:(UIButton *)btn {
+    int idx = (int)btn.tag - 7000;
+    if (idx < 0 || idx >= (int)_rows.count) return;
+    NSDictionary *row = _rows[idx];
+    NSString *action = row[@"action"];
+    if (!action) return;
+    NSLog(@"[TTG] actionRowTapped: %@", action);
+
+    [self dismissSelf];
+
+    // 详情页也用 addSubview 到 window（绕开 presentViewController）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIWindow *win = TTGFrontmostWindow();
+        if (!win) return;
+
+        if ([action isEqualToString:@"region"]) {
+            // 地区选择 —— 弹 alert
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🌍 切换地区"
+                message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+            NSArray *regions = @[@"US", @"JP", @"KR", @"GB", @"FR", @"DE", @"CA", @"AU", @"MX", @"BR", @"IN", @"ID", @"TH", @"VN", @"PH", @"NG", @"ZA", @"EG"];
+            for (NSString *r in regions) {
+                NSString *display = TTGRegionDisplayNameForCode(r);
+                [alert addAction:[UIAlertAction actionWithTitle:display style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+                    ttgSelectedRegion = r;
+                    TTGShowToast([NSString stringWithFormat:@"✅ 已切换地区：%@", r]);
+                }]];
+            }
+            [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+            UIViewController *topVC = TTGTopVC();
+            [topVC presentViewController:alert animated:YES completion:nil];
+
+        } else if ([action isEqualToString:@"tabbar"] || [action isEqualToString:@"topbar"]) {
+            // 详情页 —— addSubview 到 window（跟设置面板一样的方式）
+            UIViewController *vc = nil;
+            Class cls = NSClassFromString(@"TTGTabBarSettingsViewController");
+            if (cls) vc = [[cls alloc] init];
+            if (!vc) return;
+
+            // 🔴 详情页 view 也会有同样的触摸问题！先清手势！
+            UIView *vcView = vc.view;
+            vcView.frame = win.bounds;
+            vcView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            [win addSubview:vcView];
+            TTGRemoveAllGesturesInView(vcView);
+            NSLog(@"[TTG] ✅ 详情页已 addSubview 到 window + 已清除手势");
+        }
+    });
 }
 
 - (void)toggleAllOn {
     noads = downloadWithoutWatermark = autoPlayNextVideo = showProgressBar = canHideUI = enablePIP = enableBackgroundPlay = enableBypass = YES;
-    // 子项默认：隐藏 + 号和头像
     hide_Tab_Plus = YES;
     hide_Tab_Avatar = YES;
     hideTopBarItems = YES;
@@ -2260,216 +2308,33 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     tabBarFloating = NO;
     TTGApplyTabBarTransparent();
     TTGApplyHideTopBar();
-
-    // 手动更新所有 switch 的 on 状态（替代 reloadData）
     [self refreshAllSwitches];
     [self refreshActionRowDetails];
     TTGShowToast(@"✅ 所有功能已开启");
 }
 
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return _rows.count;
-}
-
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *ReuseId = @"TTGSettingsCell3";
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:ReuseId];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:ReuseId];
-        cell.backgroundColor = [UIColor clearColor];
-        cell.contentView.backgroundColor = [UIColor clearColor];
-    }
-    NSDictionary *row = _rows[indexPath.row];
-    cell.textLabel.text = row[@"title"];
-    cell.textLabel.font = [UIFont systemFontOfSize:15];
-    cell.textLabel.textColor = [UIColor colorWithWhite:0 alpha:0.85];
-
-    if (row[@"action"]) {
-        // Action 行
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        cell.accessoryView = nil;
-        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-        cell.detailTextLabel.font = [UIFont systemFontOfSize:13];
-        cell.detailTextLabel.textColor = [UIColor colorWithWhite:0 alpha:0.5];
-
-        if ([row[@"action"] isEqualToString:@"region"]) {
-            cell.detailTextLabel.text = TTGRegionDisplayName();
-        } else if ([row[@"action"] isEqualToString:@"tabbar"]) {
-            if (tabBarTransparent) {
-                NSString *alphaStr = [NSString stringWithFormat:@"%.0f%%", tabBarAlpha * 100];
-                cell.detailTextLabel.text = tabBarFloating ? [NSString stringWithFormat:@"🧊 悬浮 %@", alphaStr] : alphaStr;
-            } else {
-                cell.detailTextLabel.text = @"关闭";
-            }
-        } else if ([row[@"action"] isEqualToString:@"topbar"]) {
-            int count = 0;
-            if (hide_Tab_Recommended) count++;
-            if (hide_Tab_Following) count++;
-            if (hide_Tab_Friends) count++;
-            if (hide_Tab_Live) count++;
-            if (hide_Tab_Plus) count++;
-            if (hide_Tab_Avatar) count++;
-            if (hide_Tab_Search) count++;
-            cell.detailTextLabel.text = count > 0 ? [NSString stringWithFormat:@"已隐藏 %d 项", count] : @"关闭";
-        } else {
-            cell.detailTextLabel.text = nil;
-        }
-    } else {
-        // Switch 行
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        cell.detailTextLabel.text = nil;
-        BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
-
-        UISwitch *sw = (UISwitch *)cell.accessoryView;
-        if (!sw || ![sw isKindOfClass:[UISwitch class]]) {
-            sw = [[UISwitch alloc] init];
-            if (@available(iOS 13.0, *)) {
-                sw.onTintColor = [UIColor systemGreenColor];
-            } else {
-                sw.onTintColor = [UIColor colorWithRed:0.3 green:0.75 blue:0.4 alpha:1];
-            }
-            cell.accessoryView = sw;
-        }
-        sw.tag = indexPath.row;
-        sw.on = flag ? *flag : NO;
-        [sw removeTarget:nil action:nil forControlEvents:UIControlEventValueChanged];
-        [sw addTarget:self action:@selector(switchToggled:) forControlEvents:UIControlEventValueChanged];
-        NSLog(@"[TTG] 📋 cellForRow[%ld] → switch tag=%ld target=%@ self=%@",
-              (long)indexPath.row, (long)sw.tag, NSStringFromClass([self class]), self);
-    }
-    return cell;
-}
-
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    NSDictionary *row = _rows[indexPath.row];
-    NSString *action = row[@"action"];
-    if (!action) return;
-
-    UIViewController *vc = nil;
-    if ([action isEqualToString:@"region"]) {
-        vc = [[TTGRegionPickerViewController alloc] init];
-    } else if ([action isEqualToString:@"tabbar"]) {
-        vc = [[TTGTabBarSettingsViewController alloc] init];
-    } else if ([action isEqualToString:@"topbar"]) {
-        vc = [[TTGTopBarSettingsViewController alloc] init];
-    }
-    if (!vc) return;
-
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-    nav.navigationBar.tintColor = [UIColor systemBlueColor];
-    vc.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
-        initWithTitle:@"关闭" style:UIBarButtonItemStylePlain target:self
-        action:@selector(removeNavFromWindow)];
-
-    // 关键：强持有 nav！否则 ARC 立即释放 nav 和 vc → switch 的 target 变野指针
-    _detailNav = nav;
-
-    // 不走 present！直接把 nav.view 加到 window 上
-    UIWindow *win = nil;
-    if (@available(iOS 13.0, *)) {
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:NSClassFromString(@"UIWindowScene")]) {
-                NSArray *ws = [(id)scene windows];
-                if (ws.count > 0) { win = ws[0]; break; }
-            }
-        }
-    }
-    if (!win) win = [UIApplication sharedApplication].windows.firstObject;
-    if (!win) return;
-
-    nav.view.frame = win.bounds;
-    nav.view.alpha = 0;
-    nav.view.tag = 9999;
-    [win addSubview:nav.view];
-
-    [UIView animateWithDuration:0.25 animations:^{ nav.view.alpha = 1; }];
-    NSLog(@"[TTG] 📱 详情页 %@ 已加到 window", NSStringFromClass([vc class]));
-}
-
-- (void)removeNavFromWindow {
-    // 找到所有 window 里 tag=9999 的 view，移除
-    NSArray *allWindows = nil;
-    if (@available(iOS 13.0, *)) {
-        NSMutableArray *ws = [NSMutableArray array];
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:NSClassFromString(@"UIWindowScene")]) {
-                [ws addObjectsFromArray:[(id)scene windows]];
-            }
-        }
-        allWindows = ws;
-    } else {
-        allWindows = [UIApplication sharedApplication].windows;
-    }
-    for (UIWindow *win in allWindows) {
-        UIView *v = [win viewWithTag:9999];
-        if (v) {
-            [UIView animateWithDuration:0.2 animations:^{ v.alpha = 0; } completion:^(BOOL done) {
-                [v removeFromSuperview];
-                self->_detailNav = nil;
-            }];
-            return;
-        }
-    }
-    self->_detailNav = nil;
-}
-
-// 兼容旧方法（如果哪里还在调）
-- (void)dismissDetail:(id)sender {
-    [self removeNavFromWindow];
-}
-
-- (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
-    cell.backgroundColor = [UIColor clearColor];
-    cell.contentView.backgroundColor = [UIColor clearColor];
-}
-
-- (void)switchToggled:(UISwitch *)sw {
-    NSInteger index = sw.superview.tag - 1000;
-    NSLog(@"[TTG] 🎛️ switchToggled: index=%ld on=%d title=%@", (long)index, sw.isOn, _rows[index][@"title"]);
-    if (index < 0 || index >= (int)_rows.count) return;
-    NSDictionary *row = _rows[index];
-    BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
-    if (flag) *flag = sw.isOn;
-
-    // 振动反馈
-    if (@available(iOS 10.0, *)) {
-        UIImpactFeedbackGenerator *fb = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
-        [fb impactOccurred];
-    }
-
-    // 立即应用
-    if (flag == &tabBarTransparent) {
-        TTGApplyTabBarTransparent();
-    } else if (flag == &hideTopBarItems) {
-        TTGApplyHideTopBar();
-    }
-
-    // 手动刷新所有 action 行的详情文字（替代 reloadData）
-    [self refreshActionRowDetails];
-}
-
-// 手动刷新所有 switch 的 on 状态（替代 tableView reloadData）
 - (void)refreshAllSwitches {
-    for (int i = 0; i < (int)_rowViews.count; i++) {
-        UIView *rowView = _rowViews[i];
+    for (int i = 0; i < (int)_rows.count; i++) {
         NSDictionary *row = _rows[i];
         if (!row[@"ptr"]) continue;
         BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
-        UISwitch *sw = nil;
+        UIView *rowView = _rowViews[i];
         for (UIView *sv in rowView.subviews) {
-            if ([sv isKindOfClass:[UISwitch class]]) { sw = (UISwitch *)sv; break; }
+            if ([sv isKindOfClass:[UISwitch class]]) {
+                ((UISwitch *)sv).on = flag ? *flag : NO;
+                break;
+            }
         }
-        if (sw && flag) sw.on = *flag;
     }
 }
 
-// 手动刷新 action 行的详情文字
 - (void)refreshActionRowDetails {
-    for (int i = 0; i < (int)_rowViews.count; i++) {
-        UIView *rowView = _rowViews[i];
+    for (int i = 0; i < (int)_rows.count; i++) {
         NSDictionary *row = _rows[i];
         if (!row[@"action"]) continue;
+        UIView *rowView = _rowViews[i];
+        UILabel *detail = (UILabel *)[rowView viewWithTag:6000 + i];
+        if (!detail) continue;
 
         NSString *detailText = nil;
         if ([row[@"action"] isEqualToString:@"region"]) {
@@ -2492,54 +2357,8 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
             if (hide_Tab_Search) count++;
             detailText = count > 0 ? [NSString stringWithFormat:@"已隐藏 %d 项", count] : @"关闭";
         }
-
-        // 找 detail label（tag 6000+i）并更新文字 + frame
-        UILabel *detailLbl = (UILabel *)[rowView viewWithTag:6000 + i];
-        if (detailLbl && detailText) {
-            detailLbl.text = detailText;
-            [detailLbl setNeedsLayout];
-        }
+        detail.text = detailText;
     }
-}
-
-// Action 行点击处理（替代 didSelectRowAtIndexPath）
-- (void)actionRowTapped:(UITapGestureRecognizer *)tap {
-    NSInteger index = tap.view.tag - 1000;
-    if (index < 0 || index >= (int)_rows.count) return;
-    NSDictionary *row = _rows[index];
-    NSString *action = row[@"action"];
-    if (!action) return;
-
-    NSLog(@"[TTG] 🖱️ actionRowTapped: index=%ld action=%@", (long)index, action);
-
-    // 振动反馈
-    if (@available(iOS 10.0, *)) {
-        UIImpactFeedbackGenerator *fb = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
-        [fb impactOccurred];
-    }
-
-    // 跳转到对应详情页
-    if ([action isEqualToString:@"region"]) {
-        Class cls = NSClassFromString(@"TTGRegionPickerViewController");
-        if (!cls) return;
-        UIViewController *vc = [[cls alloc] init];
-        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-        nav.modalPresentationStyle = UIModalPresentationFullScreen;
-        [self presentViewController:nav animated:YES completion:nil];
-    } else if ([action isEqualToString:@"tabbar"] || [action isEqualToString:@"topbar"]) {
-        Class cls = NSClassFromString(@"TTGTabBarSettingsViewController");
-        if (!cls) return;
-        UIViewController *vc = [[cls alloc] init];
-        // 详情页自己会创建 nav 并 addSubview 到 window（在它的 viewDidLoad 里）
-        // 我们 present 它只是为了触发 viewDidLoad
-        vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
-        [self presentViewController:vc animated:YES completion:nil];
-    }
-}
-
-- (UIStatusBarStyle)preferredStatusBarStyle {
-    if (@available(iOS 13.0, *)) return UIStatusBarStyleDarkContent;
-    return UIStatusBarStyleDefault;
 }
 
 @end
