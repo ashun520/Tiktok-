@@ -46,11 +46,11 @@ static void TTGShowToast(NSString *msg) {
     UIWindow *win = TTGFrontmostWindow();
     if (!win) return;
     @try {
-        UIView *toast = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 280, 50)];
-        toast.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
-        toast.layer.cornerRadius = 25;
+        UIView *toast = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 56)];
+        toast.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.9];
+        toast.layer.cornerRadius = 28;
         toast.center = win.center;
-        UILabel *label = [[UILabel alloc] initWithFrame:toast.bounds];
+        UILabel *label = [[UILabel alloc] initWithFrame:CGRectInset(toast.bounds, 10, 8)];
         label.text = msg;
         label.textColor = [UIColor whiteColor];
         label.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
@@ -60,18 +60,29 @@ static void TTGShowToast(NSString *msg) {
         toast.alpha = 0;
         [win addSubview:toast];
         [UIView animateWithDuration:0.2 animations:^{ toast.alpha = 1; } completion:^(BOOL _) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [UIView animateWithDuration:0.25 animations:^{ toast.alpha = 0; } completion:^(BOOL __) { [toast removeFromSuperview]; }];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [UIView animateWithDuration:0.3 animations:^{ toast.alpha = 0; } completion:^(BOOL __) { [toast removeFromSuperview]; }];
             });
         }];
-    } @catch (NSException *e) {
-        NSLog(@"[TTG] toast err: %@", e);
-    }
+    } @catch (NSException *e) {}
 }
 
 static id TTGGetValue(id obj, NSString *key) {
     if (!obj || !key) return nil;
     @try { return [obj valueForKey:key]; } @catch (NSException *e) { return nil; }
+}
+
+static NSArray *TTGPropertyListForClass(Class cls) {
+    NSMutableArray *result = [NSMutableArray array];
+    unsigned int pc = 0;
+    objc_property_t *props = class_copyPropertyList(cls, &pc);
+    if (props) {
+        for (unsigned int i = 0; i < pc; i++) {
+            [result addObject:[NSString stringWithUTF8String:property_getName(props[i])]];
+        }
+        free(props);
+    }
+    return result;
 }
 
 #pragma mark - 找当前 aweme
@@ -87,7 +98,6 @@ static NSArray *TTGAllSubviewsOf(UIView *v) {
 }
 
 static id TTGFindAwemeFromViewHierarchy(void) {
-    // 遍历所有 window 的 subview，找含 model/aweme/video 属性的 VC/View
     @try {
         NSArray *allWindows = nil;
         if (@available(iOS 13.0, *)) {
@@ -106,7 +116,6 @@ static id TTGFindAwemeFromViewHierarchy(void) {
 
         for (UIWindow *win in allWindows) {
             for (UIView *view in TTGAllSubviewsOf(win)) {
-                // ViewController 本身
                 if ([view isKindOfClass:[UIViewController class]]) {
                     UIViewController *vc = (UIViewController *)view;
                     for (NSString *k in keys) {
@@ -115,7 +124,6 @@ static id TTGFindAwemeFromViewHierarchy(void) {
                         if (v && [NSStringFromClass([v class]) containsString:@"Aweme"]) return v;
                     }
                 }
-                // View 有自定义 ivar
                 unsigned int pc = 0;
                 objc_property_t *props = class_copyPropertyList([view class], &pc);
                 if (props) {
@@ -138,27 +146,36 @@ static id TTGFindAwemeFromViewHierarchy(void) {
     return nil;
 }
 
-#pragma mark - 从 aweme 取视频 URL（模板）
+#pragma mark - 从 aweme 取视频 URL（极致详细日志版）
 
 static NSString *TTGExtractVideoURL(id aweme) {
     if (!aweme) return nil;
     @try {
+        Class awemeClass = [aweme class];
+        NSLog(@"[TTG] 🔍 aweme class=%@ props=%@", NSStringFromClass(awemeClass), [TTGPropertyListForClass(awemeClass) componentsJoinedByString:@","]);
+
         id video = TTGGetValue(aweme, @"video");
         if (!video) {
-            // 有些版本 aweme 本身就是 video model
             if ([NSStringFromClass([aweme class]) containsString:@"Video"]) video = aweme;
-            else return nil;
+            else {
+                NSLog(@"[TTG] ❌ aweme 里没有 video 属性");
+                return nil;
+            }
         }
+        NSLog(@"[TTG] 🔍 video class=%@ props=%@", NSStringFromClass([video class]), [TTGPropertyListForClass([video class]) componentsJoinedByString:@","]);
 
-        // playURL 优先（无水印版本）→ downloadURL 兜底
-        for (NSString *urlKey in @[@"playURL", @"downloadURL", @"playApi", @"streamURL"]) {
+        for (NSString *urlKey in @[@"playURL", @"downloadURL", @"playApi", @"streamURL", @"bitRateURL"]) {
             id urlModel = TTGGetValue(video, urlKey);
             if (!urlModel) continue;
+            NSLog(@"[TTG] 🔑 video.%@ class=%@", urlKey, NSStringFromClass([urlModel class]));
 
-            // originURLList / urlList / urls 数组
+            NSArray *urlProps = TTGPropertyListForClass([urlModel class]);
+            NSLog(@"[TTG]     urlModel props: %@", [urlProps componentsJoinedByString:@","]);
+
             for (NSString *listKey in @[@"originURLList", @"urlList", @"urls", @"urlListString"]) {
                 id list = TTGGetValue(urlModel, listKey);
                 if ([list isKindOfClass:[NSArray class]] && [list count] > 0) {
+                    NSLog(@"[TTG]     %@[%lu] = %@", listKey, (unsigned long)[list count], list[0]);
                     id first = list[0];
                     if ([first isKindOfClass:[NSString class]] && [first hasPrefix:@"http"]) return first;
                     if ([first isKindOfClass:[NSURL class]]) return ((NSURL *)first).absoluteString;
@@ -166,9 +183,8 @@ static NSString *TTGExtractVideoURL(id aweme) {
                     if (surl && [surl hasPrefix:@"http"]) return surl;
                 }
             }
-            // 直接 url
             NSString *direct = TTGGetValue(urlModel, @"url");
-            if (direct && [direct hasPrefix:@"http"]) return direct;
+            if (direct && [direct hasPrefix:@"http"]) { NSLog(@"[TTG]     urlModel.url = %@", direct); return direct; }
         }
     } @catch (NSException *e) {
         NSLog(@"[TTG] extract url err: %@", e);
@@ -176,17 +192,59 @@ static NSString *TTGExtractVideoURL(id aweme) {
     return nil;
 }
 
-#pragma mark - 下载 & 保存（零 hook 方案）
+#pragma mark - 裸下载（真实浏览器 UA，带完整 TikTok 请求头）
+
+static void TTGBareDownload(NSString *urlStr, NSURL *outURL, void (^done)(BOOL ok, NSError *err)) {
+    NSURL *url = [NSURL URLWithString:urlStr];
+    if (!url) { done(NO, [NSError errorWithDomain:@"TTG" code:-1 userInfo:@{NSLocalizedDescriptionKey:@"URL invalid"}]); return; }
+
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    [req setValue:@"com.ss.android.ugc.aweme" forHTTPHeaderField:@"X-App-Pkg"];
+    [req setValue:@"16.5.0" forHTTPHeaderField:@"X-Version"];
+    [req setValue:@"Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 com.ss.android.ugc.aweme/47.6.0" forHTTPHeaderField:@"User-Agent"];
+    [req setValue:@"https://www.tiktok.com/" forHTTPHeaderField:@"Referer"];
+    [req setValue:@"*/*" forHTTPHeaderField:@"Accept"];
+    [req setTimeoutInterval:60];
+
+    NSLog(@"[TTG] 📥 bare GET %@", urlStr);
+
+    NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithRequest:req
+        completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+            if (error || !location) { done(NO, error); return; }
+            NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+            NSLog(@"[TTG] 📥 bare HTTP %ld MIME=%@", (long)http.statusCode, http.MIMEType);
+            if (http.statusCode >= 400) {
+                done(NO, [NSError errorWithDomain:@"TTG" code:http.statusCode userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"HTTP %ld", (long)http.statusCode]}]);
+                return;
+            }
+            NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:location.path error:nil];
+            long long sz = [attrs[NSFileSize] longLongValue];
+            NSLog(@"[TTG] 📥 bare size=%lld", sz);
+            if (sz < 10 * 1024) { done(NO, [NSError errorWithDomain:@"TTG" code:-2 userInfo:@{NSLocalizedDescriptionKey:@"File too small"}]); return; }
+            [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
+            NSError *copyErr = nil;
+            if (![[NSFileManager defaultManager] copyItemAtURL:location toURL:outURL error:&copyErr]) {
+                done(NO, copyErr); return;
+            }
+            done(YES, nil);
+        }];
+    [task resume];
+}
+
+#pragma mark - 下载 & 保存主流程
+
+static void TTGFinishSave(NSURL *outURL);
+static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_queue_t bgQ);
 
 static void TTGDownloadAndSave(void) {
     @try {
         id aweme = TTGFindAwemeFromViewHierarchy();
         if (!aweme) { TTGShowToast(@"❌ 没找到当前视频"); return; }
+        NSLog(@"[TTG] ✅ 找到 aweme: %@", NSStringFromClass([aweme class]));
 
         NSString *urlStr = TTGExtractVideoURL(aweme);
         if (!urlStr || urlStr.length < 10) { TTGShowToast(@"❌ 拿不到视频链接"); return; }
-
-        NSLog(@"[TTG] 📥 aweme=%@  urlKey=playURL  url=%@", NSStringFromClass([aweme class]), urlStr);
+        NSLog(@"[TTG] ✅ 原始 URL: %@", urlStr);
 
         if ([urlStr containsString:@".m3u8"]) { TTGShowToast(@"❌ m3u8 暂不支持"); return; }
 
@@ -195,95 +253,147 @@ static void TTGDownloadAndSave(void) {
         NSURL *url = [NSURL URLWithString:urlStr];
         if (!url) { TTGShowToast(@"❌ URL 无效"); return; }
 
-        // AVURLAsset 会用 TikTok 进程内注册的 loader 去加载，自动处理签名
-        AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:@{
-            AVURLAssetPreferPreciseDurationAndTimingKey: @YES
-        }];
-
-        // 输出路径
         NSString *outPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
             [NSString stringWithFormat:@"ttg_%.0f.mp4", [[NSDate date] timeIntervalSince1970]]];
         NSURL *outURL = [NSURL fileURLWithPath:outPath];
         [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
 
-        // 后台队列做 export（避免卡主线程）
         dispatch_queue_t bgQ = dispatch_queue_create("com.ttg.export", DISPATCH_QUEUE_SERIAL);
         dispatch_async(bgQ, ^{
+            // ============================================
+            // 第一步：AVURLAsset 预加载 duration + tracks
+            // ============================================
+            AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:@{
+                AVURLAssetPreferPreciseDurationAndTimingKey: @YES
+            }];
+            NSLog(@"[TTG] 🎞️ AVURLAsset created: %@", asset.URL.absoluteString);
+
+            dispatch_semaphore_t preloadSem = dispatch_semaphore_create(0);
+            __block NSError *loadErr = nil;
+            __block BOOL hasVideoTrack = NO;
+            [asset loadValuesAsynchronouslyForKeys:@[@"duration", @"tracks"] completionHandler:^{
+                NSError *durationErr = nil;
+                AVKeyValueStatus durStatus = [asset statusOfValueForKey:@"duration" error:&durationErr];
+                NSError *tracksErr = nil;
+                AVKeyValueStatus tracksStatus = [asset statusOfValueForKey:@"tracks" error:&tracksErr];
+                NSLog(@"[TTG] 🎞️ duration status=%ld err=%@", (long)durStatus, durationErr);
+                NSLog(@"[TTG] 🎞️ tracks status=%ld err=%@ count=%lu", (long)tracksStatus, tracksErr, (unsigned long)asset.tracks.count);
+                if (durStatus != AVKeyValueStatusLoaded) loadErr = durationErr ?: tracksErr;
+                for (AVAssetTrack *t in asset.tracks) {
+                    if ([t.mediaType isEqualToString:AVMediaTypeVideo]) { hasVideoTrack = YES; break; }
+                }
+                dispatch_semaphore_signal(preloadSem);
+            }];
+            dispatch_semaphore_wait(preloadSem, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
+
+            if (!hasVideoTrack || loadErr) {
+                NSLog(@"[TTG] ❌ AVURLAsset 加载失败: hasVideo=%d err=%@ — 跳过 export", hasVideoTrack, loadErr);
+                // 直接走裸下载
+                TTGDownloadBareAndSave(urlStr, outURL, bgQ);
+                return;
+            }
+
+            // ============================================
+            // 第二步：AVAssetExportSession 四档预设
+            // ============================================
             for (NSString *preset in @[AVAssetExportPresetHighestQuality, AVAssetExportPreset1280x720, AVAssetExportPresetMediumQuality, AVAssetExportPresetPassthrough]) {
                 @autoreleasepool {
                     @try {
                         AVAssetExportSession *exporter = [AVAssetExportSession exportSessionWithAsset:asset presetName:preset];
-                        if (!exporter) continue;
+                        if (!exporter) { NSLog(@"[TTG]   ⚠️ preset=%@ 返回 nil", preset); continue; }
                         exporter.outputURL = outURL;
                         exporter.outputFileType = AVFileTypeMPEG4;
                         exporter.shouldOptimizeForNetworkUse = NO;
 
-                        __block BOOL done = NO;
-                        __block BOOL success = NO;
-                        __block NSError *lastErr = nil;
-
                         dispatch_semaphore_t sem = dispatch_semaphore_create(0);
                         [exporter exportAsynchronouslyWithCompletionHandler:^{
-                            AVAssetExportSessionStatus s = exporter.status;
-                            NSError *err = exporter.error;
-                            NSLog(@"[TTG] 📦 preset=%@ status=%ld err=%@", preset, (long)s, err);
-                            if (s == AVAssetExportSessionStatusCompleted) {
-                                success = YES;
-                                done = YES;
-                            } else if (s == AVAssetExportSessionStatusFailed || s == AVAssetExportSessionStatusCancelled) {
-                                lastErr = err;
-                                done = YES;
-                            }
+                            NSLog(@"[TTG]   📦 preset=%@ status=%ld err=%@", preset, (long)exporter.status, exporter.error);
                             dispatch_semaphore_signal(sem);
                         }];
-                        dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+                        dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_SEC));
 
-                        if (success) {
-                            // 校验
-                            AVURLAsset *chk = [AVURLAsset URLAssetWithURL:outURL options:nil];
-                            BOOL hasVideo = NO;
-                            for (AVAssetTrack *t in chk.tracks) {
-                                if ([t.mediaType isEqualToString:AVMediaTypeVideo]) { hasVideo = YES; break; }
-                            }
-                            if (!hasVideo) {
-                                [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
-                                dispatch_async(dispatch_get_main_queue(), ^{ TTGShowToast(@"❌ 拿到的不是视频"); });
-                                return;
-                            }
-                            // 保存到相册
-                            [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
-                                if (status != PHAuthorizationStatusAuthorized) {
-                                    [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
-                                    dispatch_async(dispatch_get_main_queue(), ^{ TTGShowToast(@"❌ 没相册权限"); });
-                                    return;
-                                }
-                                [[PHPhotoLibrary sharedPhotoLibrary] performChanges:^{
-                                    [PHAssetChangeRequest creationRequestForAssetFromVideoAtFileURL:outURL];
-                                } completionHandler:^(BOOL ok, NSError *err) {
-                                    [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
-                                    dispatch_async(dispatch_get_main_queue(), ^{
-                                        if (ok) TTGShowToast(@"✅ 已保存到相册");
-                                        else {
-                                            NSLog(@"[TTG] save err: %@", err);
-                                            TTGShowToast([NSString stringWithFormat:@"❌ 保存失败:%@", err.localizedDescription]);
-                                        }
-                                    });
-                                }];
-                            }];
-                            return; // 成功就返回
+                        if (exporter.status == AVAssetExportSessionStatusCompleted) {
+                            goto SAVE_TO_PHOTOS;
                         }
                     } @catch (NSException *e) {
-                        NSLog(@"[TTG] export loop err: %@", e);
+                        NSLog(@"[TTG]   ❌ preset=%@ exception: %@", preset, e);
                     }
                 }
             }
-            // 全部 preset 都失败
-            dispatch_async(dispatch_get_main_queue(), ^{ TTGShowToast(@"❌ 下载失败，请稍后再试"); });
+
+            // ============================================
+            // 第三步：所有 export 失败 → 裸下载兜底
+            // ============================================
+            NSLog(@"[TTG] ⚠️ 所有 AVAssetExportSession preset 都失败，降级裸下载");
+            TTGDownloadBareAndSave(urlStr, outURL, bgQ);
+            return;
+
+            SAVE_TO_PHOTOS: {
+                NSLog(@"[TTG] ✅ AVAssetExportSession 导出成功");
+                AVURLAsset *chk = [AVURLAsset URLAssetWithURL:outURL options:nil];
+                BOOL hasV = NO;
+                for (AVAssetTrack *t in chk.tracks) {
+                    if ([t.mediaType isEqualToString:AVMediaTypeVideo]) { hasV = YES; break; }
+                }
+                if (!hasV) {
+                    NSLog(@"[TTG] ❌ 导出文件无视频轨道");
+                    [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
+                    dispatch_async(dispatch_get_main_queue(), ^{ TTGShowToast(@"❌ 拿到的不是视频"); });
+                    return;
+                }
+                TTGFinishSave(outURL);
+            }
         });
     } @catch (NSException *e) {
-        NSLog(@"[TTG] TTGDownloadAndSave outer err: %@", e);
+        NSLog(@"[TTG] outer err: %@", e);
         TTGShowToast(@"❌ 内部错误");
     }
+}
+
+// 裸下载（类方法占位，实际用 dispatch_queue 串行）
+static void TTGFinishSave(NSURL *outURL) {
+    [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
+        if (status != PHAuthorizationStatusAuthorized) {
+            [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{ TTGShowToast(@"❌ 没相册权限"); });
+            return;
+        }
+        [[PHPhotoLibrary sharedPhotoLibrary] performChanges:^{
+            [PHAssetChangeRequest creationRequestForAssetFromVideoAtFileURL:outURL];
+        } completionHandler:^(BOOL ok, NSError *err) {
+            [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (ok) TTGShowToast(@"✅ 已保存到相册");
+                else {
+                    NSLog(@"[TTG] save err: %@", err);
+                    TTGShowToast([NSString stringWithFormat:@"❌ 保存失败:%@", err.localizedDescription ?: @"unknown"]);
+                }
+            });
+        }];
+    }];
+}
+
+static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_queue_t bgQ) {
+    TTGBareDownload(urlStr, outURL, ^(BOOL ok, NSError *err) {
+        if (ok) {
+            AVURLAsset *chk = [AVURLAsset URLAssetWithURL:outURL options:nil];
+            BOOL hasV = NO;
+            for (AVAssetTrack *t in chk.tracks) {
+                if ([t.mediaType isEqualToString:AVMediaTypeVideo]) { hasV = YES; break; }
+            }
+            if (!hasV) {
+                [[NSFileManager defaultManager] removeItemAtURL:outURL error:nil];
+                dispatch_async(dispatch_get_main_queue(), ^{ TTGShowToast(@"❌ 裸下载不是视频（可能被 CDN 拒签）"); });
+                return;
+            }
+            TTGFinishSave(outURL);
+        } else {
+            NSLog(@"[TTG] ❌ 裸下载失败: %@", err);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                TTGShowToast([NSString stringWithFormat:@"❌ 下载失败:%@", err.localizedDescription ?: @"稍后再试"]);
+            });
+        }
+    });
 }
 
 #pragma mark - 悬浮按钮
@@ -311,7 +421,7 @@ static void TTGDownloadAndSave(void) {
             [self setTitle:@"⬇" forState:UIControlStateNormal];
             [self setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
             self.titleLabel.font = [UIFont boldSystemFontOfSize:18];
-        } @catch (NSException *e) { NSLog(@"[TTG] btn init err: %@", e); }
+        } @catch (NSException *e) {}
     }
     return self;
 }
@@ -413,11 +523,10 @@ static void TTGDownloadAndSave(void) {
 
 @end
 
-#pragma mark - 少量系统 hook（用 class_replaceMethod，安全）
+#pragma mark - 安全 hook
 
 static void TTGInstallSafeHooks(void) {
     @try {
-        // 后台播放
         [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationWillResignActiveNotification
             object:nil queue:[NSOperationQueue mainQueue]
             usingBlock:^(NSNotification *note) {
@@ -425,16 +534,15 @@ static void TTGInstallSafeHooks(void) {
                     [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:nil];
                 }
             }];
-        NSLog(@"[TTG] ✅ 后台播放 hook 已安装");
+        NSLog(@"[TTG] ✅ 后台播放 hook");
 
-        // CTCarrier 切地区（class_replaceMethod 方式，比 method_setImplementation 安全）
         if (changeRegion) {
             Class CTCarrier = NSClassFromString(@"CTCarrier");
             if (CTCarrier) {
                 class_replaceMethod(CTCarrier, @selector(mcc), imp_implementationWithBlock(^id(id s){ return @"310"; }), "@@:");
                 class_replaceMethod(CTCarrier, @selector(mnc), imp_implementationWithBlock(^id(id s){ return @"001"; }), "@@:");
                 class_replaceMethod(CTCarrier, @selector(isoCountryCode), imp_implementationWithBlock(^id(id s){ return @"us"; }), "@@:");
-                NSLog(@"[TTG] ✅ CTCarrier hook 已安装");
+                NSLog(@"[TTG] ✅ CTCarrier hook");
             }
         }
     } @catch (NSException *e) {
@@ -446,11 +554,8 @@ static void TTGInstallSafeHooks(void) {
 
 __attribute__((constructor)) static void TTGInit(void) {
     NSLog(@"[TTG] 🚀 ctor 启动");
-
-    // 注册所有 hook（先注册，避免漏掉启动前播放的内容）
     TTGInstallSafeHooks();
 
-    // 悬浮按钮延迟出现（等主 window 就绪）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         @try {
             UIWindow *win = TTGFrontmostWindow();
