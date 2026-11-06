@@ -1389,7 +1389,7 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
         UIViewController *vc = [[cls alloc] init];
         if (!vc) { TTGSetWindowLongPressEnabled(YES); _panelShowing = NO; return; }
 
-        vc.modalPresentationStyle = UIModalPresentationFullScreen;
+        vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
         vc.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
         [topVC presentViewController:vc animated:NO completion:nil];
     }
@@ -1909,7 +1909,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 
 @implementation TTGSettingsViewController {
     NSArray *_rows;
-    UITableView *_tableView;
+    NSMutableArray *_rowViews;   // 每行一个 UIView 容器（替代 UITableView）
     UIView *_dimmingView;
     UIView *_card;
     UINavigationController *_detailNav;  // 强持有详情页 nav，防止 vc 被释放
@@ -1997,18 +1997,99 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     [rows addObject:@{@"title": @"🔝 隐藏顶栏元素", @"action": @"topbar"}];      // 点击进详情（子选项）
     _rows = rows;
 
-    // TableView
-    _tableView = [[UITableView alloc] init];
-    _tableView.backgroundColor = [UIColor clearColor];
-    _tableView.dataSource = self;
-    _tableView.delegate = self;
-    _tableView.rowHeight = 48;
-    _tableView.separatorStyle = UITableViewCellSeparatorStyleSingleLine;
-    _tableView.separatorInset = UIEdgeInsetsMake(0, 16, 0, 16);
-    _tableView.separatorColor = [UIColor colorWithWhite:0 alpha:0.08];
-    _tableView.scrollEnabled = NO;   // 卡片高度刚好容纳 9 行，不滚
-    _tableView.tableFooterView = [[UIView alloc] init];
-    [_card addSubview:_tableView];
+    // ===== 彻底抛弃 UITableView！改用手动行 UIView 容器 =====
+    // UITableView 内部的 UITapGestureRecognizer 会吞掉 UISwitch 的触摸
+    // 我们用最干净的方式：每行一个 UIView，UISwitch 直接 addSubview 到 rowView
+    _rowViews = [NSMutableArray array];
+    for (int i = 0; i < (int)_rows.count; i++) {
+        NSDictionary *row = _rows[i];
+
+        UIView *rowContainer = [[UIView alloc] init];
+        rowContainer.backgroundColor = [UIColor clearColor];
+        rowContainer.tag = 1000 + i;
+        rowContainer.userInteractionEnabled = YES;
+
+        // 分隔线（每行底部）
+        UIView *sep = [[UIView alloc] init];
+        sep.backgroundColor = [UIColor colorWithWhite:0 alpha:0.08];
+        sep.tag = 2000 + i;
+        [rowContainer addSubview:sep];
+
+        // 标题（不吞触摸）
+        UILabel *titleLbl = [[UILabel alloc] init];
+        titleLbl.text = row[@"title"];
+        titleLbl.font = [UIFont systemFontOfSize:15];
+        titleLbl.textColor = [UIColor colorWithWhite:0 alpha:0.85];
+        titleLbl.userInteractionEnabled = NO;
+        titleLbl.tag = 3000 + i;
+        [rowContainer addSubview:titleLbl];
+
+        if (row[@"ptr"]) {
+            // Switch 行 — UISwitch 直接 addSubview 到 rowContainer
+            BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
+            UISwitch *sw = [[UISwitch alloc] init];
+            sw.on = flag ? *flag : NO;
+            if (@available(iOS 13.0, *)) sw.onTintColor = [UIColor systemGreenColor];
+            sw.userInteractionEnabled = YES;
+            // 不用 tag 存 index — switch 所在的 rowView.tag = 1000+i，通过 superview 反推
+            [sw addTarget:self action:@selector(switchToggled:) forControlEvents:UIControlEventValueChanged];
+            [rowContainer addSubview:sw];
+        } else if (row[@"action"]) {
+            // Action 行 — 右指示 + 可点区域
+            UILabel *arrow = [[UILabel alloc] init];
+            arrow.text = @"›";
+            arrow.font = [UIFont systemFontOfSize:22 weight:UIFontWeightThin];
+            arrow.textColor = [UIColor colorWithWhite:0 alpha:0.35];
+            arrow.userInteractionEnabled = NO;
+            arrow.tag = 5000 + i;
+            [rowContainer addSubview:arrow];
+
+            // 右侧详情文字（可选）
+            NSString *detailText = nil;
+            if ([row[@"action"] isEqualToString:@"region"]) {
+                detailText = TTGRegionDisplayName();
+            } else if ([row[@"action"] isEqualToString:@"tabbar"]) {
+                if (tabBarTransparent) {
+                    NSString *alphaStr = [NSString stringWithFormat:@"%.0f%%", tabBarAlpha * 100];
+                    detailText = tabBarFloating ? [NSString stringWithFormat:@"🧊 %@", alphaStr] : alphaStr;
+                } else {
+                    detailText = @"关闭";
+                }
+            } else if ([row[@"action"] isEqualToString:@"topbar"]) {
+                int count = 0;
+                if (hide_Tab_Recommended) count++;
+                if (hide_Tab_Following) count++;
+                if (hide_Tab_Friends) count++;
+                if (hide_Tab_Live) count++;
+                if (hide_Tab_Plus) count++;
+                if (hide_Tab_Avatar) count++;
+                if (hide_Tab_Search) count++;
+                detailText = count > 0 ? [NSString stringWithFormat:@"已隐藏 %d 项", count] : @"关闭";
+            }
+            if (detailText) {
+                UILabel *detail = [[UILabel alloc] init];
+                detail.text = detailText;
+                detail.font = [UIFont systemFontOfSize:13];
+                detail.textColor = [UIColor colorWithWhite:0 alpha:0.45];
+                detail.userInteractionEnabled = NO;
+                detail.tag = 6000 + i;
+                [rowContainer addSubview:detail];
+            }
+
+            // Action 行整体可点
+            UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
+                initWithTarget:self action:@selector(actionRowTapped:)];
+            tap.cancelsTouchesInView = NO;
+            tap.delaysTouchesBegan = NO;
+            tap.delaysTouchesEnded = NO;
+            rowContainer.userInteractionEnabled = YES;
+            [rowContainer addGestureRecognizer:tap];
+        }
+
+        [_card addSubview:rowContainer];
+        [_rowViews addObject:rowContainer];
+    }
+    NSLog(@"[TTG] ✅ 已创建 %lu 个手动行 UIView（彻底绕开 UITableView）", (unsigned long)_rowViews.count);
 
     // 底部署名（卡片内）
     UILabel *footer = [[UILabel alloc] init];
@@ -2018,9 +2099,6 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     footer.textAlignment = NSTextAlignmentCenter;
     footer.tag = 104;
     [_card addSubview:footer];
-
-    // 点遮罩关闭 — 已删除 tap 手势！任何 tap 手势都可能干扰 card 内的 switch 触摸
-    // 用户用右上角 ✕ 关闭即可
 }
 
 - (void)viewDidLayoutSubviews {
@@ -2069,7 +2147,41 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     closeBtn.frame = CGRectMake(W - 40, 14, 26, 26);
     allOnBtn.frame = CGRectMake(18, 46, 84, 22);
 
-    _tableView.frame = CGRectMake(0, headerH, W, tableH);
+    // 手动布局每行 UIView（替代 tableView.frame）
+    for (int i = 0; i < (int)_rowViews.count; i++) {
+        UIView *rowView = _rowViews[i];
+        CGFloat rowY = headerH + i * rowH;
+        rowView.frame = CGRectMake(0, rowY, W, rowH);
+
+        // 标题
+        UILabel *tLbl = (UILabel *)[rowView viewWithTag:3000 + i];
+        tLbl.frame = CGRectMake(18, 0, W - 120, rowH);
+
+        // switch 行 — 遍历 subviews 找 UISwitch
+        UISwitch *sw = nil;
+        for (UIView *sv in rowView.subviews) {
+            if ([sv isKindOfClass:[UISwitch class]]) { sw = (UISwitch *)sv; break; }
+        }
+        if (sw) {
+            CGSize sz = [sw sizeThatFits:CGSizeZero];
+            sw.frame = CGRectMake(W - 18 - sz.width, (rowH - sz.height) / 2, sz.width, sz.height);
+        }
+
+        // action 行的箭头
+        UILabel *arrow = (UILabel *)[rowView viewWithTag:5000 + i];
+        if (arrow) arrow.frame = CGRectMake(W - 24, 0, 18, rowH);
+
+        // action 行的详情文字
+        UILabel *detail = (UILabel *)[rowView viewWithTag:6000 + i];
+        if (detail) {
+            CGSize ds = [detail sizeThatFits:CGSizeMake(W - 140, rowH)];
+            detail.frame = CGRectMake(W - 24 - ds.width - 6, 0, ds.width, rowH);
+        }
+
+        // 分隔线
+        UIView *sep = (UIView *)[rowView viewWithTag:2000 + i];
+        sep.frame = CGRectMake(18, rowH - 0.5, W - 36, 0.5);
+    }
 
     footer.frame = CGRectMake(0, headerH + tableH + 4, W, 22);
 }
@@ -2113,7 +2225,10 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     tabBarFloating = NO;
     TTGApplyTabBarTransparent();
     TTGApplyHideTopBar();
-    [_tableView reloadData];
+
+    // 手动更新所有 switch 的 on 状态（替代 reloadData）
+    [self refreshAllSwitches];
+    [self refreshActionRowDetails];
     TTGShowToast(@"✅ 所有功能已开启");
 }
 
@@ -2275,13 +2390,14 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (void)switchToggled:(UISwitch *)sw {
-    NSLog(@"[TTG] 🎛️ switchToggled: tag=%ld on=%d title=%@", (long)sw.tag, sw.isOn, _rows[sw.tag][@"title"]);
-    if (sw.tag < 0 || sw.tag >= (int)_rows.count) return;
-    NSDictionary *row = _rows[sw.tag];
+    NSInteger index = sw.superview.tag - 1000;
+    NSLog(@"[TTG] 🎛️ switchToggled: index=%ld on=%d title=%@", (long)index, sw.isOn, _rows[index][@"title"]);
+    if (index < 0 || index >= (int)_rows.count) return;
+    NSDictionary *row = _rows[index];
     BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
     if (flag) *flag = sw.isOn;
 
-    // 振动反馈 —— 让用户无电脑也能验证触摸是否到达！
+    // 振动反馈
     if (@available(iOS 10.0, *)) {
         UIImpactFeedbackGenerator *fb = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
         [fb impactOccurred];
@@ -2294,8 +2410,96 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         TTGApplyHideTopBar();
     }
 
-    // 强制刷新 tableView（保险起见）
-    [_tableView reloadData];
+    // 手动刷新所有 action 行的详情文字（替代 reloadData）
+    [self refreshActionRowDetails];
+}
+
+// 手动刷新所有 switch 的 on 状态（替代 tableView reloadData）
+- (void)refreshAllSwitches {
+    for (int i = 0; i < (int)_rowViews.count; i++) {
+        UIView *rowView = _rowViews[i];
+        NSDictionary *row = _rows[i];
+        if (!row[@"ptr"]) continue;
+        BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
+        UISwitch *sw = nil;
+        for (UIView *sv in rowView.subviews) {
+            if ([sv isKindOfClass:[UISwitch class]]) { sw = (UISwitch *)sv; break; }
+        }
+        if (sw && flag) sw.on = *flag;
+    }
+}
+
+// 手动刷新 action 行的详情文字
+- (void)refreshActionRowDetails {
+    for (int i = 0; i < (int)_rowViews.count; i++) {
+        UIView *rowView = _rowViews[i];
+        NSDictionary *row = _rows[i];
+        if (!row[@"action"]) continue;
+
+        NSString *detailText = nil;
+        if ([row[@"action"] isEqualToString:@"region"]) {
+            detailText = TTGRegionDisplayName();
+        } else if ([row[@"action"] isEqualToString:@"tabbar"]) {
+            if (tabBarTransparent) {
+                NSString *alphaStr = [NSString stringWithFormat:@"%.0f%%", tabBarAlpha * 100];
+                detailText = tabBarFloating ? [NSString stringWithFormat:@"🧊 %@", alphaStr] : alphaStr;
+            } else {
+                detailText = @"关闭";
+            }
+        } else if ([row[@"action"] isEqualToString:@"topbar"]) {
+            int count = 0;
+            if (hide_Tab_Recommended) count++;
+            if (hide_Tab_Following) count++;
+            if (hide_Tab_Friends) count++;
+            if (hide_Tab_Live) count++;
+            if (hide_Tab_Plus) count++;
+            if (hide_Tab_Avatar) count++;
+            if (hide_Tab_Search) count++;
+            detailText = count > 0 ? [NSString stringWithFormat:@"已隐藏 %d 项", count] : @"关闭";
+        }
+
+        // 找 detail label（tag 6000+i）并更新文字 + frame
+        UILabel *detailLbl = (UILabel *)[rowView viewWithTag:6000 + i];
+        if (detailLbl && detailText) {
+            detailLbl.text = detailText;
+            [detailLbl setNeedsLayout];
+        }
+    }
+}
+
+// Action 行点击处理（替代 didSelectRowAtIndexPath）
+- (void)actionRowTapped:(UITapGestureRecognizer *)tap {
+    NSInteger index = tap.view.tag - 1000;
+    if (index < 0 || index >= (int)_rows.count) return;
+    NSDictionary *row = _rows[index];
+    NSString *action = row[@"action"];
+    if (!action) return;
+
+    NSLog(@"[TTG] 🖱️ actionRowTapped: index=%ld action=%@", (long)index, action);
+
+    // 振动反馈
+    if (@available(iOS 10.0, *)) {
+        UIImpactFeedbackGenerator *fb = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+        [fb impactOccurred];
+    }
+
+    // 跳转到对应详情页
+    if ([action isEqualToString:@"region"]) {
+        Class cls = NSClassFromString(@"TTGRegionPickerViewController");
+        if (!cls) return;
+        UIViewController *vc = [[cls alloc] init];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+        nav.modalPresentationStyle = UIModalPresentationFullScreen;
+        [self presentViewController:nav animated:YES completion:nil];
+    } else if ([action isEqualToString:@"tabbar"] || [action isEqualToString:@"topbar"]) {
+        Class cls = NSClassFromString(@"TTGTabBarSettingsViewController");
+        if (!cls) return;
+        UIViewController *vc = [[cls alloc] init];
+        // 详情页自己会创建 nav 并 addSubview 到 window（在它的 viewDidLoad 里）
+        // 我们 present 它只是为了触发 viewDidLoad
+        vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
+        [self presentViewController:vc animated:YES completion:nil];
+    }
 }
 
 - (UIStatusBarStyle)preferredStatusBarStyle {
