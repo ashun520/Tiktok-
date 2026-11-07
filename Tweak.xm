@@ -1569,155 +1569,215 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 
 @end
 
-#pragma mark - 底栏设置详情页（滑块 + 悬浮）
+#pragma mark - 底栏设置面板（纯 UIView，addSubview 到 window）
 
-@interface TTGTabBarSettingsViewController : UIViewController
+@interface TTGTabBarSettingsPanel : UIView
+- (void)show;
 @end
 
-@implementation TTGTabBarSettingsViewController {
+@implementation TTGTabBarSettingsPanel {
+    UIView *_dimmingView;
+    UIView *_card;
     UISwitch *_mainSwitch;
     UISwitch *_floatSwitch;
     UISlider *_slider;
     UILabel *_alphaLabel;
 }
 
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"🎛️ 底栏设置";
-    self.view.backgroundColor = [UIColor systemBackgroundColor];
-    [self setupUI];
+- (instancetype)init {
+    self = [super initWithFrame:[UIScreen mainScreen].bounds];
+    if (self) {
+        self.backgroundColor = [UIColor clearColor];
+        self.opaque = NO;
+        [self setup];
+    }
+    return self;
 }
 
-- (void)setupUI {
-    // 清旧的 label/hint/preview（tag >= 9000 的）
-    [[self.view.subviews copy] enumerateObjectsUsingBlock:^(UIView *v, NSUInteger idx, BOOL *stop) {
-        if (v.tag >= 9000 && v.tag != 9101 && v.tag != 9102 && v.tag != 9103) [v removeFromSuperview];
+- (void)show {
+    TTGSetWindowLongPressEnabled(NO);
+    UIWindow *win = TTGFrontmostWindow();
+    if (!win) { TTGSetWindowLongPressEnabled(YES); return; }
+    self.frame = win.bounds;
+    self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [win addSubview:self];
+    _dimmingView.alpha = 0;
+    _card.transform = CGAffineTransformMakeScale(0.85, 0.85);
+    _card.alpha = 0;
+    [UIView animateWithDuration:0.35 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0.4 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        self->_dimmingView.alpha = 1;
+        self->_card.transform = CGAffineTransformIdentity;
+        self->_card.alpha = 1;
+    } completion:nil];
+    NSLog(@"[TTG] ✅ 底栏设置面板已 addSubview 到 window");
+}
+
+- (void)dismissSelf {
+    [UIView animateWithDuration:0.2 animations:^{
+        self->_dimmingView.alpha = 0;
+        self->_card.transform = CGAffineTransformMakeScale(0.9, 0.9);
+        self->_card.alpha = 0;
+    } completion:^(BOOL done) {
+        [self removeFromSuperview];
+        TTGSetWindowLongPressEnabled(YES);
     }];
+}
 
-    CGFloat h = self.view.bounds.size.height;
-    CGFloat w = self.view.bounds.size.width;
-    if (w <= 0) w = [UIScreen mainScreen].bounds.size.width;
-    if (h <= 0) h = [UIScreen mainScreen].bounds.size.height;
+- (void)setup {
+    _dimmingView = [[UIView alloc] init];
+    _dimmingView.backgroundColor = [UIColor colorWithWhite:0 alpha:0.4];
+    _dimmingView.userInteractionEnabled = YES;
+    [self addSubview:_dimmingView];
 
-    CGFloat pad = 20;
-    CGFloat top = 120;
+    _card = [[UIView alloc] init];
+    _card.backgroundColor = [UIColor clearColor];
+    _card.layer.cornerRadius = 22;
+    _card.layer.shadowColor = [UIColor blackColor].CGColor;
+    _card.layer.shadowOpacity = 0.22;
+    _card.layer.shadowOffset = CGSizeMake(0, 10);
+    _card.layer.shadowRadius = 28;
+    _card.clipsToBounds = NO;
+    _card.userInteractionEnabled = YES;
+    [self addSubview:_card];
 
-    // 总开关 Label
-    UILabel *lbl1 = (UILabel *)[self.view viewWithTag:9001];
-    if (!lbl1) {
-        lbl1 = [[UILabel alloc] init];
-        lbl1.tag = 9001;
-        lbl1.text = @"启用底栏设置";
-        lbl1.font = [UIFont boldSystemFontOfSize:16];
-        [self.view addSubview:lbl1];
-    }
-    lbl1.frame = CGRectMake(pad, top, w - pad * 2 - 80, 30);
+    UIBlurEffect *be = [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
+    UIVisualEffectView *bvg = [[UIVisualEffectView alloc] initWithEffect:be];
+    bvg.tag = 999;
+    bvg.layer.cornerRadius = 22;
+    bvg.clipsToBounds = YES;
+    [_card addSubview:bvg];
+    UIView *tint = [[UIView alloc] init];
+    tint.backgroundColor = [UIColor colorWithWhite:1 alpha:0.12];
+    tint.tag = 998;
+    [_card addSubview:tint];
 
-    // 总开关 Switch
-    if (!_mainSwitch) {
-        _mainSwitch = [[UISwitch alloc] init];
-        _mainSwitch.on = tabBarTransparent;
-        [_mainSwitch addTarget:self action:@selector(mainChanged:) forControlEvents:UIControlEventValueChanged];
-    }
-    _mainSwitch.frame = CGRectMake(w - pad - 60, top, 60, 30);
-    [self.view addSubview:_mainSwitch];
+    UILabel *title = [[UILabel alloc] init];
+    title.text = @"🎛️ 底栏设置";
+    title.font = [UIFont boldSystemFontOfSize:20];
+    title.textColor = [UIColor colorWithWhite:0 alpha:0.9];
+    title.tag = 101;
+    [_card addSubview:title];
 
-    top += 60;
+    UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [closeBtn setTitle:@"✕" forState:UIControlStateNormal];
+    closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:14];
+    [closeBtn setTitleColor:[UIColor colorWithWhite:0 alpha:0.6] forState:UIControlStateNormal];
+    closeBtn.backgroundColor = [UIColor colorWithWhite:0 alpha:0.06];
+    closeBtn.layer.cornerRadius = 13;
+    closeBtn.tag = 102;
+    [closeBtn addTarget:self action:@selector(dismissSelf) forControlEvents:UIControlEventTouchUpInside];
+    [_card addSubview:closeBtn];
 
-    // 悬浮 Label
-    UILabel *lbl2 = (UILabel *)[self.view viewWithTag:9002];
-    if (!lbl2) {
-        lbl2 = [[UILabel alloc] init];
-        lbl2.tag = 9002;
-        lbl2.text = @"🧊 悬浮底栏（圆角+阴影+毛玻璃）";
-        lbl2.font = [UIFont systemFontOfSize:15];
-        [self.view addSubview:lbl2];
-    }
-    lbl2.frame = CGRectMake(pad, top, w - pad * 2 - 80, 30);
+    UILabel *lbl1 = [[UILabel alloc] init];
+    lbl1.text = @"启用底栏设置";
+    lbl1.font = [UIFont boldSystemFontOfSize:16];
+    lbl1.userInteractionEnabled = NO;
+    lbl1.tag = 111;
+    [_card addSubview:lbl1];
 
-    if (!_floatSwitch) {
-        _floatSwitch = [[UISwitch alloc] init];
-        _floatSwitch.on = tabBarFloating;
-        [_floatSwitch addTarget:self action:@selector(floatChanged:) forControlEvents:UIControlEventValueChanged];
-    }
-    _floatSwitch.frame = CGRectMake(w - pad - 60, top, 60, 30);
-    [self.view addSubview:_floatSwitch];
+    _mainSwitch = [[UISwitch alloc] init];
+    _mainSwitch.on = tabBarTransparent;
+    if (@available(iOS 13.0, *)) _mainSwitch.onTintColor = [UIColor systemGreenColor];
+    [_mainSwitch addTarget:self action:@selector(mainChanged:) forControlEvents:UIControlEventValueChanged];
+    [_card addSubview:_mainSwitch];
 
-    top += 60;
+    UILabel *lbl2 = [[UILabel alloc] init];
+    lbl2.text = @"🧊 悬浮底栏（圆角+阴影+毛玻璃）";
+    lbl2.font = [UIFont systemFontOfSize:14];
+    lbl2.userInteractionEnabled = NO;
+    lbl2.tag = 113;
+    [_card addSubview:lbl2];
 
-    UILabel *lbl3 = (UILabel *)[self.view viewWithTag:9003];
-    if (!lbl3) {
-        lbl3 = [[UILabel alloc] init];
-        lbl3.tag = 9003;
-        lbl3.text = @"透明度";
-        lbl3.font = [UIFont boldSystemFontOfSize:16];
-        [self.view addSubview:lbl3];
-    }
-    lbl3.frame = CGRectMake(pad, top, w - pad * 2, 30);
+    _floatSwitch = [[UISwitch alloc] init];
+    _floatSwitch.on = tabBarFloating;
+    if (@available(iOS 13.0, *)) _floatSwitch.onTintColor = [UIColor systemGreenColor];
+    [_floatSwitch addTarget:self action:@selector(floatChanged:) forControlEvents:UIControlEventValueChanged];
+    [_card addSubview:_floatSwitch];
 
-    top += 40;
+    UILabel *lbl3 = [[UILabel alloc] init];
+    lbl3.text = @"透明度";
+    lbl3.font = [UIFont boldSystemFontOfSize:16];
+    lbl3.userInteractionEnabled = NO;
+    lbl3.tag = 115;
+    [_card addSubview:lbl3];
 
-    if (!_slider) {
-        _slider = [[UISlider alloc] init];
-        _slider.minimumValue = 0.0;
-        _slider.maximumValue = 1.0;
-        _slider.value = tabBarAlpha;
-        [_slider addTarget:self action:@selector(sliderChanged:) forControlEvents:UIControlEventValueChanged];
-        [self.view addSubview:_slider];
-    }
-    _slider.frame = CGRectMake(pad, top, w - pad * 2, 40);
+    _slider = [[UISlider alloc] init];
+    _slider.minimumValue = 0.0;
+    _slider.maximumValue = 1.0;
+    _slider.value = tabBarAlpha;
+    [_slider addTarget:self action:@selector(sliderChanged:) forControlEvents:UIControlEventValueChanged];
+    [_card addSubview:_slider];
 
-    top += 40;
-
-    if (!_alphaLabel) {
-        _alphaLabel = [[UILabel alloc] init];
-        _alphaLabel.textAlignment = NSTextAlignmentCenter;
-        _alphaLabel.font = [UIFont fontWithName:@"Menlo" size:15];
-        _alphaLabel.textColor = [UIColor systemGrayColor];
-        [self.view addSubview:_alphaLabel];
-    }
-    _alphaLabel.frame = CGRectMake(pad, top, w - pad * 2, 30);
+    _alphaLabel = [[UILabel alloc] init];
+    _alphaLabel.textAlignment = NSTextAlignmentCenter;
+    _alphaLabel.font = [UIFont fontWithName:@"Menlo" size:15];
+    _alphaLabel.textColor = [UIColor systemGrayColor];
+    _alphaLabel.tag = 117;
+    [_card addSubview:_alphaLabel];
     [self updateAlphaLabel];
 
-    // 说明
-    top += 70;
-    UILabel *hint = (UILabel *)[self.view viewWithTag:9101];
-    if (!hint) {
-        hint = [[UILabel alloc] init];
-        hint.tag = 9101;
-        hint.font = [UIFont systemFontOfSize:13];
-        hint.textColor = [UIColor systemGrayColor];
-        hint.numberOfLines = 0;
-        hint.text = @"💡 滑动调节底栏透明度。0% = 全透明（只剩按钮），100% = 不透明。\n开启悬浮模式后，底栏会变成一个带圆角和毛玻璃的悬浮胶囊，视觉效果更高级。";
-        [self.view addSubview:hint];
-    }
-    CGSize hintSize = [hint sizeThatFits:CGSizeMake(w - pad * 2, 1000)];
-    hint.frame = CGRectMake(pad, top, w - pad * 2, hintSize.height);
+    UILabel *hint = [[UILabel alloc] init];
+    hint.font = [UIFont systemFontOfSize:12.5];
+    hint.textColor = [UIColor systemGrayColor];
+    hint.numberOfLines = 0;
+    hint.userInteractionEnabled = NO;
+    hint.text = @"💡 滑动调节底栏透明度。0% = 全透明（只剩按钮），100% = 不透明。\n开启悬浮模式后，底栏变成带圆角和毛玻璃的悬浮胶囊。";
+    hint.tag = 118;
+    [_card addSubview:hint];
 
-    // 预览按钮
-    top += hintSize.height + 10;
-    UIButton *preview = (UIButton *)[self.view viewWithTag:9102];
-    if (!preview) {
-        preview = [UIButton buttonWithType:UIButtonTypeSystem];
-        preview.tag = 9102;
-        [preview setTitle:@"👀 实时预览效果" forState:UIControlStateNormal];
-        preview.titleLabel.font = [UIFont boldSystemFontOfSize:16];
-        preview.backgroundColor = [UIColor systemBlueColor];
-        [preview setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        preview.layer.cornerRadius = 10;
-        [preview addTarget:self action:@selector(previewNow) forControlEvents:UIControlEventTouchUpInside];
-        [self.view addSubview:preview];
-    }
-    preview.frame = CGRectMake(pad, top, w - pad * 2, 44);
+    UIButton *preview = [UIButton buttonWithType:UIButtonTypeSystem];
+    [preview setTitle:@"👀 实时预览效果" forState:UIControlStateNormal];
+    preview.titleLabel.font = [UIFont boldSystemFontOfSize:16];
+    preview.backgroundColor = [UIColor systemBlueColor];
+    [preview setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    preview.layer.cornerRadius = 10;
+    preview.tag = 119;
+    [preview addTarget:self action:@selector(previewNow) forControlEvents:UIControlEventTouchUpInside];
+    [_card addSubview:preview];
 }
 
-- (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];
-    [self setupUI];
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGRect b = self.bounds;
+    _dimmingView.frame = b;
+
+    CGFloat cardW = MIN(b.size.width - 32, 420);
+    CGFloat cardH = 470;
+    CGFloat topInset = TTGStatusBarHeight();
+    CGFloat idealTop = (b.size.height - cardH) / 2;
+    CGFloat cardTop = MAX(topInset + 40, MIN(idealTop, b.size.height - cardH - 40));
+    _card.frame = CGRectMake((b.size.width - cardW) / 2, cardTop, cardW, cardH);
+
+    UIVisualEffectView *bvg = (UIVisualEffectView *)[_card viewWithTag:999];
+    UIView *tint = (UIView *)[_card viewWithTag:998];
+    bvg.frame = _card.bounds;
+    tint.frame = _card.bounds;
+
+    CGFloat W = cardW, pad = 18;
+    [(UILabel *)[_card viewWithTag:101] setFrame:CGRectMake(pad, 16, W - 90, 26)];
+    [(UIButton *)[_card viewWithTag:102] setFrame:CGRectMake(W - 40, 14, 26, 26)];
+
+    CGFloat y = 58;
+    [(UILabel *)[_card viewWithTag:111] setFrame:CGRectMake(pad, y, W - pad * 2 - 70, 30)];
+    _mainSwitch.frame = CGRectMake(W - pad - 51, y, 51, 31);
+    y += 50;
+    [(UILabel *)[_card viewWithTag:113] setFrame:CGRectMake(pad, y, W - pad * 2 - 70, 30)];
+    _floatSwitch.frame = CGRectMake(W - pad - 51, y, 51, 31);
+    y += 50;
+    [(UILabel *)[_card viewWithTag:115] setFrame:CGRectMake(pad, y, W - pad * 2, 28)];
+    y += 34;
+    _slider.frame = CGRectMake(pad, y, W - pad * 2, 34);
+    y += 40;
+    _alphaLabel.frame = CGRectMake(pad, y, W - pad * 2, 24);
+    y += 32;
+    UILabel *hint = (UILabel *)[_card viewWithTag:118];
+    CGSize hs = [hint sizeThatFits:CGSizeMake(W - pad * 2, 1000)];
+    hint.frame = CGRectMake(pad, y, W - pad * 2, hs.height);
+    y += hs.height + 14;
+    [(UIButton *)[_card viewWithTag:119] setFrame:CGRectMake(pad, y, W - pad * 2, 44)];
 }
 
 - (void)updateAlphaLabel {
-    if (!_alphaLabel) return;
     int pct = (int)(_slider.value * 100);
     NSString *desc;
     if (pct <= 10) desc = @"几乎全透明";
@@ -1732,6 +1792,9 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     NSLog(@"[TTG] 🎛️ tabbar mainChanged → on=%d", sw.on);
     tabBarTransparent = sw.on;
     TTGApplyTabBarTransparent();
+    if (@available(iOS 10.0, *)) {
+        [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+    }
     TTGShowToast(sw.on ? @"✅ 底栏透明已开启" : @"✅ 底栏已还原");
 }
 
@@ -1743,11 +1806,13 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         _mainSwitch.on = YES;
     }
     TTGApplyTabBarTransparent();
+    if (@available(iOS 10.0, *)) {
+        [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+    }
     TTGShowToast(sw.on ? @"🧊 悬浮模式已开启" : @"🧊 悬浮模式已关闭");
 }
 
 - (void)sliderChanged:(UISlider *)s {
-    NSLog(@"[TTG] 🎛️ sliderChanged → value=%.2f", s.value);
     tabBarAlpha = s.value;
     [self updateAlphaLabel];
     if (tabBarTransparent) TTGApplyTabBarTransparent();
@@ -1760,139 +1825,234 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 
 @end
 
-#pragma mark - 隐藏顶栏元素详情页（checklist）
+#pragma mark - 顶栏设置面板（纯 UIView）
 
-@interface TTGTopBarSettingsViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@interface TTGTopBarSettingsPanel : UIView
+- (void)show;
 @end
 
-@implementation TTGTopBarSettingsViewController {
+@implementation TTGTopBarSettingsPanel {
+    UIView *_dimmingView;
+    UIView *_card;
     UISwitch *_mainSwitch;
-    UITableView *_tv;
-    NSArray *_items; // @[@{title, ptr:BOOL*, desc}]
+    NSArray *_items;
+    UIScrollView *_scroll;
 }
 
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"🔝 隐藏顶栏元素";
-    self.view.backgroundColor = [UIColor systemBackgroundColor];
-
-    // frame 里存的是相对偏移，viewDidLayoutSubviews 再算绝对坐标
-    [self setupUI];
+- (instancetype)init {
+    self = [super initWithFrame:[UIScreen mainScreen].bounds];
+    if (self) {
+        self.backgroundColor = [UIColor clearColor];
+        self.opaque = NO;
+        [self setup];
+    }
+    return self;
 }
 
-- (void)setupUI {
-    // 清掉旧的（防止 viewDidLayoutSubviews 重复调用）
-    [[self.view.subviews copy] enumerateObjectsUsingBlock:^(UIView *v, NSUInteger idx, BOOL *stop) {
-        if (v.tag >= 9000) [v removeFromSuperview];
+- (void)show {
+    TTGSetWindowLongPressEnabled(NO);
+    UIWindow *win = TTGFrontmostWindow();
+    if (!win) { TTGSetWindowLongPressEnabled(YES); return; }
+    self.frame = win.bounds;
+    self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [win addSubview:self];
+    _dimmingView.alpha = 0;
+    _card.transform = CGAffineTransformMakeScale(0.85, 0.85);
+    _card.alpha = 0;
+    [UIView animateWithDuration:0.35 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0.4 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        self->_dimmingView.alpha = 1;
+        self->_card.transform = CGAffineTransformIdentity;
+        self->_card.alpha = 1;
+    } completion:nil];
+    NSLog(@"[TTG] ✅ 顶栏设置面板已 addSubview 到 window");
+}
+
+- (void)dismissSelf {
+    [UIView animateWithDuration:0.2 animations:^{
+        self->_dimmingView.alpha = 0;
+        self->_card.transform = CGAffineTransformMakeScale(0.9, 0.9);
+        self->_card.alpha = 0;
+    } completion:^(BOOL done) {
+        [self removeFromSuperview];
+        TTGSetWindowLongPressEnabled(YES);
     }];
+}
 
-    CGFloat h = self.view.bounds.size.height;
-    CGFloat w = self.view.bounds.size.width;
-    if (w <= 0) w = [UIScreen mainScreen].bounds.size.width;
-    if (h <= 0) h = [UIScreen mainScreen].bounds.size.height;
+- (void)setup {
+    _dimmingView = [[UIView alloc] init];
+    _dimmingView.backgroundColor = [UIColor colorWithWhite:0 alpha:0.4];
+    _dimmingView.userInteractionEnabled = YES;
+    [self addSubview:_dimmingView];
 
-    CGFloat pad = 20;
-    CGFloat top = 120; // 避开导航栏
-    CGFloat contentW = w - pad * 2;
+    _card = [[UIView alloc] init];
+    _card.backgroundColor = [UIColor clearColor];
+    _card.layer.cornerRadius = 22;
+    _card.layer.shadowColor = [UIColor blackColor].CGColor;
+    _card.layer.shadowOpacity = 0.22;
+    _card.layer.shadowOffset = CGSizeMake(0, 10);
+    _card.layer.shadowRadius = 28;
+    _card.clipsToBounds = NO;
+    _card.userInteractionEnabled = YES;
+    [self addSubview:_card];
 
-    // 总开关 Label
+    UIBlurEffect *be = [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
+    UIVisualEffectView *bvg = [[UIVisualEffectView alloc] initWithEffect:be];
+    bvg.tag = 999;
+    bvg.layer.cornerRadius = 22;
+    bvg.clipsToBounds = YES;
+    [_card addSubview:bvg];
+    UIView *tint = [[UIView alloc] init];
+    tint.backgroundColor = [UIColor colorWithWhite:1 alpha:0.12];
+    tint.tag = 998;
+    [_card addSubview:tint];
+
+    UILabel *title = [[UILabel alloc] init];
+    title.text = @"🔝 隐藏顶栏元素";
+    title.font = [UIFont boldSystemFontOfSize:20];
+    title.textColor = [UIColor colorWithWhite:0 alpha:0.9];
+    title.tag = 101;
+    [_card addSubview:title];
+
+    UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [closeBtn setTitle:@"✕" forState:UIControlStateNormal];
+    closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:14];
+    [closeBtn setTitleColor:[UIColor colorWithWhite:0 alpha:0.6] forState:UIControlStateNormal];
+    closeBtn.backgroundColor = [UIColor colorWithWhite:0 alpha:0.06];
+    closeBtn.layer.cornerRadius = 13;
+    closeBtn.tag = 102;
+    [closeBtn addTarget:self action:@selector(dismissSelf) forControlEvents:UIControlEventTouchUpInside];
+    [_card addSubview:closeBtn];
+
+    // 总开关行
     UILabel *lbl1 = [[UILabel alloc] init];
-    lbl1.tag = 9001;
-    lbl1.frame = CGRectMake(pad, top, contentW - 80, 30);
     lbl1.text = @"启用顶栏元素隐藏";
     lbl1.font = [UIFont boldSystemFontOfSize:16];
-    [self.view addSubview:lbl1];
+    lbl1.userInteractionEnabled = NO;
+    lbl1.tag = 111;
+    [_card addSubview:lbl1];
 
-    // 总开关 UISwitch
-    if (!_mainSwitch) {
-        _mainSwitch = [[UISwitch alloc] init];
-        _mainSwitch.on = hideTopBarItems;
-        [_mainSwitch addTarget:self action:@selector(mainChanged:) forControlEvents:UIControlEventValueChanged];
-    }
-    _mainSwitch.frame = CGRectMake(w - pad - 60, top, 60, 30);
-    [self.view addSubview:_mainSwitch];
+    _mainSwitch = [[UISwitch alloc] init];
+    _mainSwitch.on = hideTopBarItems;
+    if (@available(iOS 13.0, *)) _mainSwitch.onTintColor = [UIColor systemGreenColor];
+    [_mainSwitch addTarget:self action:@selector(mainChanged:) forControlEvents:UIControlEventValueChanged];
+    [_card addSubview:_mainSwitch];
 
-    top += 50;
-
-    // 小标题
     UILabel *lbl2 = [[UILabel alloc] init];
-    lbl2.tag = 9002;
-    lbl2.frame = CGRectMake(pad, top, contentW, 30);
     lbl2.text = @"选择要隐藏的元素";
-    lbl2.font = [UIFont boldSystemFontOfSize:16];
-    lbl2.textColor = [UIColor systemGray2Color];
-    [self.view addSubview:lbl2];
+    lbl2.font = [UIFont boldSystemFontOfSize:14];
+    lbl2.textColor = [UIColor systemGrayColor];
+    lbl2.userInteractionEnabled = NO;
+    lbl2.tag = 112;
+    [_card addSubview:lbl2];
 
-    top += 30;
+    _items = @[
+        @{@"title": @"📺 推荐 / For You Tab",  @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Recommended], @"desc": @"For You / 推荐 文字 tab"},
+        @{@"title": @"👥 关注 / Following Tab", @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Following],   @"desc": @"Following / 关注 文字 tab"},
+        @{@"title": @"🤝 好友 / Friends Tab",   @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Friends],     @"desc": @"Friends / 好友 文字 tab"},
+        @{@"title": @"🔴 LIVE 直播入口",         @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Live],        @"desc": @"LIVE / 直播 tab"},
+        @{@"title": @"➕ 中间 + 号 / 小花按钮",  @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Plus],        @"desc": @"发视频的创建按钮"},
+        @{@"title": @"👤 右上角头像",            @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Avatar],      @"desc": @"头像/个人主页入口"},
+        @{@"title": @"🔍 搜索按钮",              @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Search],      @"desc": @"顶栏右上角搜索图标"},
+    ];
 
-    // 数据
-    if (!_items) {
-        _items = @[
-            @{@"title": @"📺 推荐 / For You Tab",    @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Recommended], @"desc": @"For You / 推荐 文字 tab"},
-            @{@"title": @"👥 关注 / Following Tab",  @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Following],   @"desc": @"Following / 关注 文字 tab"},
-            @{@"title": @"🤝 好友 / Friends Tab",     @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Friends],     @"desc": @"Friends / 好友 文字 tab"},
-            @{@"title": @"🔴 LIVE 直播入口",           @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Live],         @"desc": @"LIVE / 直播 tab"},
-            @{@"title": @"➕ 中间 + 号 / 小花按钮",    @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Plus],        @"desc": @"发视频的创建按钮，默认隐藏"},
-            @{@"title": @"👤 右上角头像",              @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Avatar],      @"desc": @"头像/个人主页入口，默认隐藏"},
-            @{@"title": @"🔍 搜索按钮",                @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Search],       @"desc": @"顶栏右上角搜索图标"},
-        ];
+    _scroll = [[UIScrollView alloc] init];
+    _scroll.showsVerticalScrollIndicator = YES;
+    _scroll.tag = 120;
+    [_card addSubview:_scroll];
+
+    // 每行手动布局（不用 UITableView）
+    for (int i = 0; i < (int)_items.count; i++) {
+        NSDictionary *it = _items[i];
+        UIView *row = [[UIView alloc] init];
+        row.tag = 8000 + i;
+        row.userInteractionEnabled = YES;
+
+        UILabel *t = [[UILabel alloc] init];
+        t.text = it[@"title"];
+        t.font = [UIFont systemFontOfSize:15];
+        t.userInteractionEnabled = NO;
+        t.tag = 1;
+        [row addSubview:t];
+
+        UILabel *d = [[UILabel alloc] init];
+        d.text = it[@"desc"];
+        d.font = [UIFont systemFontOfSize:11.5];
+        d.textColor = [UIColor systemGrayColor];
+        d.userInteractionEnabled = NO;
+        d.tag = 2;
+        [row addSubview:d];
+
+        BOOL *flag = (BOOL *)[(NSValue *)it[@"ptr"] pointerValue];
+        UISwitch *sw = [[UISwitch alloc] init];
+        sw.on = flag ? *flag : NO;
+        if (@available(iOS 13.0, *)) sw.onTintColor = [UIColor systemGreenColor];
+        sw.tag = i;
+        [sw addTarget:self action:@selector(itemToggled:) forControlEvents:UIControlEventValueChanged];
+        [row addSubview:sw];
+
+        UIView *sep = [[UIView alloc] init];
+        sep.backgroundColor = [UIColor colorWithWhite:0 alpha:0.08];
+        sep.tag = 3;
+        [row addSubview:sep];
+
+        [_scroll addSubview:row];
     }
-
-    // TableView
-    if (!_tv) {
-        _tv = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStyleGrouped];
-        _tv.dataSource = self;
-        _tv.delegate = self;
-        _tv.backgroundColor = [UIColor systemBackgroundColor];
-    }
-    _tv.frame = CGRectMake(0, top, w, h - top);
-    [self.view addSubview:_tv];
 }
 
-- (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];
-    [self setupUI];
-    // 不要在这里 reloadData —— 会触发 cellForRow 重复创建 switch
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGRect b = self.bounds;
+    _dimmingView.frame = b;
+
+    CGFloat cardW = MIN(b.size.width - 32, 420);
+    CGFloat headerH = 108; // title + main switch + section label
+    CGFloat rowH = 56;
+    CGFloat listH = rowH * _items.count;
+    CGFloat maxCardH = b.size.height - 120;
+    CGFloat cardH = MIN(headerH + listH + 16, maxCardH);
+    CGFloat cardTop = (b.size.height - cardH) / 2;
+    _card.frame = CGRectMake((b.size.width - cardW) / 2, cardTop, cardW, cardH);
+
+    UIVisualEffectView *bvg = (UIVisualEffectView *)[_card viewWithTag:999];
+    UIView *tint = (UIView *)[_card viewWithTag:998];
+    bvg.frame = _card.bounds;
+    tint.frame = _card.bounds;
+
+    CGFloat W = cardW, pad = 18;
+    [(UILabel *)[_card viewWithTag:101] setFrame:CGRectMake(pad, 16, W - 90, 26)];
+    [(UIButton *)[_card viewWithTag:102] setFrame:CGRectMake(W - 40, 14, 26, 26)];
+    [(UILabel *)[_card viewWithTag:111] setFrame:CGRectMake(pad, 52, W - pad * 2 - 70, 30)];
+    _mainSwitch.frame = CGRectMake(W - pad - 51, 52, 51, 31);
+    [(UILabel *)[_card viewWithTag:112] setFrame:CGRectMake(pad, 86, W - pad * 2, 20)];
+
+    _scroll.frame = CGRectMake(0, headerH, W, cardH - headerH - 8);
+    _scroll.contentSize = CGSizeMake(W, listH);
+
+    for (int i = 0; i < (int)_items.count; i++) {
+        UIView *row = [_scroll viewWithTag:8000 + i];
+        row.frame = CGRectMake(0, i * rowH, W, rowH);
+        UILabel *t = (UILabel *)[row viewWithTag:1];
+        UILabel *d = (UILabel *)[row viewWithTag:2];
+        UIView *sep = [row viewWithTag:3];
+        t.frame = CGRectMake(pad, 6, W - pad * 2 - 70, 22);
+        d.frame = CGRectMake(pad, 28, W - pad * 2 - 70, 16);
+        UISwitch *sw = nil;
+        for (UIView *sv in row.subviews) {
+            if ([sv isKindOfClass:[UISwitch class]]) { sw = (UISwitch *)sv; break; }
+        }
+        if (sw) sw.frame = CGRectMake(W - pad - 51, (rowH - 31) / 2, 51, 31);
+        sep.frame = CGRectMake(pad, rowH - 0.5, W - pad * 2, 0.5);
+    }
 }
 
 - (void)mainChanged:(UISwitch *)sw {
-    NSLog(@"[TTG] 🔝 mainChanged → on=%d", sw.on);
+    NSLog(@"[TTG] 🔝 topbar mainChanged → on=%d", sw.on);
     hideTopBarItems = sw.on;
     TTGApplyHideTopBar();
+    if (@available(iOS 10.0, *)) {
+        [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+    }
     TTGShowToast(sw.on ? @"✅ 隐藏顶栏已开启" : @"✅ 顶栏已还原");
-}
-
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return _items.count;
-}
-
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *ReuseId = @"topbarcell";
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:ReuseId];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:ReuseId];
-    }
-    NSDictionary *it = _items[indexPath.row];
-    cell.textLabel.text = it[@"title"];
-    cell.textLabel.font = [UIFont systemFontOfSize:15];
-    cell.detailTextLabel.text = it[@"desc"];
-    cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
-    cell.detailTextLabel.textColor = [UIColor systemGrayColor];
-    cell.selectionStyle = UITableViewCellSelectionStyleNone;
-
-    BOOL *flag = (BOOL *)[(NSValue *)it[@"ptr"] pointerValue];
-    // 复用 accessoryView，不要每次新建
-    UISwitch *sw = (UISwitch *)cell.accessoryView;
-    if (!sw || ![sw isKindOfClass:[UISwitch class]]) {
-        sw = [[UISwitch alloc] init];
-        if (@available(iOS 13.0, *)) sw.onTintColor = [UIColor systemGreenColor];
-        cell.accessoryView = sw;
-    }
-    sw.tag = indexPath.row;
-    sw.on = flag ? *flag : NO;
-    [sw removeTarget:nil action:nil forControlEvents:UIControlEventValueChanged];
-    [sw addTarget:self action:@selector(itemToggled:) forControlEvents:UIControlEventValueChanged];
-    return cell;
 }
 
 - (void)itemToggled:(UISwitch *)sw {
@@ -1900,7 +2060,9 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     NSDictionary *it = _items[sw.tag];
     BOOL *flag = (BOOL *)[(NSValue *)it[@"ptr"] pointerValue];
     if (flag) *flag = sw.isOn;
-    // 至少勾了一个 → 自动开总开关
+    NSLog(@"[TTG] 🔝 itemToggled: %@ → %d", it[@"title"], sw.isOn);
+
+    // 至少勾了一个 → 自动开总开关；全没勾 → 自动关
     BOOL any = NO;
     for (NSDictionary *d in _items) {
         BOOL *f = (BOOL *)[(NSValue *)d[@"ptr"] pointerValue];
@@ -1914,6 +2076,186 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         _mainSwitch.on = NO;
     }
     TTGApplyHideTopBar();
+    if (@available(iOS 10.0, *)) {
+        [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+    }
+}
+
+@end
+
+#pragma mark - 地区选择面板（纯 UIView）
+
+@interface TTGRegionPanel : UIView
+- (void)show;
+@end
+
+@implementation TTGRegionPanel {
+    UIView *_dimmingView;
+    UIView *_card;
+    UIScrollView *_scroll;
+    NSArray *_codes;
+}
+
+- (instancetype)init {
+    self = [super initWithFrame:[UIScreen mainScreen].bounds];
+    if (self) {
+        self.backgroundColor = [UIColor clearColor];
+        self.opaque = NO;
+        [self setup];
+    }
+    return self;
+}
+
+- (void)show {
+    TTGSetWindowLongPressEnabled(NO);
+    UIWindow *win = TTGFrontmostWindow();
+    if (!win) { TTGSetWindowLongPressEnabled(YES); return; }
+    self.frame = win.bounds;
+    self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [win addSubview:self];
+    _dimmingView.alpha = 0;
+    _card.transform = CGAffineTransformMakeScale(0.85, 0.85);
+    _card.alpha = 0;
+    [UIView animateWithDuration:0.35 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0.4 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        self->_dimmingView.alpha = 1;
+        self->_card.transform = CGAffineTransformIdentity;
+        self->_card.alpha = 1;
+    } completion:nil];
+}
+
+- (void)dismissSelf {
+    [UIView animateWithDuration:0.2 animations:^{
+        self->_dimmingView.alpha = 0;
+        self->_card.transform = CGAffineTransformMakeScale(0.9, 0.9);
+        self->_card.alpha = 0;
+    } completion:^(BOOL done) {
+        [self removeFromSuperview];
+        TTGSetWindowLongPressEnabled(YES);
+    }];
+}
+
+- (void)setup {
+    _dimmingView = [[UIView alloc] init];
+    _dimmingView.backgroundColor = [UIColor colorWithWhite:0 alpha:0.4];
+    _dimmingView.userInteractionEnabled = YES;
+    [self addSubview:_dimmingView];
+
+    _card = [[UIView alloc] init];
+    _card.backgroundColor = [UIColor clearColor];
+    _card.layer.cornerRadius = 22;
+    _card.layer.shadowColor = [UIColor blackColor].CGColor;
+    _card.layer.shadowOpacity = 0.22;
+    _card.layer.shadowOffset = CGSizeMake(0, 10);
+    _card.layer.shadowRadius = 28;
+    _card.clipsToBounds = NO;
+    _card.userInteractionEnabled = YES;
+    [self addSubview:_card];
+
+    UIBlurEffect *be = [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
+    UIVisualEffectView *bvg = [[UIVisualEffectView alloc] initWithEffect:be];
+    bvg.tag = 999;
+    bvg.layer.cornerRadius = 22;
+    bvg.clipsToBounds = YES;
+    [_card addSubview:bvg];
+    UIView *tint = [[UIView alloc] init];
+    tint.backgroundColor = [UIColor colorWithWhite:1 alpha:0.12];
+    tint.tag = 998;
+    [_card addSubview:tint];
+
+    UILabel *title = [[UILabel alloc] init];
+    title.text = @"🌍 切换地区";
+    title.font = [UIFont boldSystemFontOfSize:20];
+    title.textColor = [UIColor colorWithWhite:0 alpha:0.9];
+    title.tag = 101;
+    [_card addSubview:title];
+
+    UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [closeBtn setTitle:@"✕" forState:UIControlStateNormal];
+    closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:14];
+    [closeBtn setTitleColor:[UIColor colorWithWhite:0 alpha:0.6] forState:UIControlStateNormal];
+    closeBtn.backgroundColor = [UIColor colorWithWhite:0 alpha:0.06];
+    closeBtn.layer.cornerRadius = 13;
+    closeBtn.tag = 102;
+    [closeBtn addTarget:self action:@selector(dismissSelf) forControlEvents:UIControlEventTouchUpInside];
+    [_card addSubview:closeBtn];
+
+    // 地区列表（按名称排序）
+    _codes = [[TTGCountryList() allKeys] sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        return [TTGRegionInfo(a)[@"name"] compare:TTGRegionInfo(b)[@"name"]];
+    }];
+
+    _scroll = [[UIScrollView alloc] init];
+    _scroll.showsVerticalScrollIndicator = YES;
+    _scroll.tag = 120;
+    [_card addSubview:_scroll];
+
+    for (int i = 0; i < (int)_codes.count; i++) {
+        NSString *code = _codes[i];
+        UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+        NSString *name = TTGRegionInfo(code)[@"name"];
+        BOOL selected = [code isEqualToString:ttgSelectedRegion];
+        [btn setTitle:[NSString stringWithFormat:@"%@%@", name, selected ? @"  ✓" : @""] forState:UIControlStateNormal];
+        btn.titleLabel.font = [UIFont systemFontOfSize:16 weight:selected ? UIFontWeightBold : UIFontWeightRegular];
+        btn.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+        btn.contentEdgeInsets = UIEdgeInsetsMake(0, 18, 0, 0);
+        [btn setTitleColor:[UIColor colorWithWhite:0 alpha:0.85] forState:UIControlStateNormal];
+        btn.tag = 9000 + i;
+        [btn addTarget:self action:@selector(regionPicked:) forControlEvents:UIControlEventTouchUpInside];
+        [_scroll addSubview:btn];
+
+        UIView *sep = [[UIView alloc] init];
+        sep.backgroundColor = [UIColor colorWithWhite:0 alpha:0.08];
+        sep.tag = 9500 + i;
+        [_scroll addSubview:sep];
+    }
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGRect b = self.bounds;
+    _dimmingView.frame = b;
+
+    CGFloat cardW = MIN(b.size.width - 32, 420);
+    CGFloat rowH = 46;
+    CGFloat headerH = 52;
+    CGFloat listH = rowH * _codes.count;
+    CGFloat maxCardH = b.size.height - 140;
+    CGFloat cardH = MIN(headerH + listH + 12, maxCardH);
+    CGFloat cardTop = (b.size.height - cardH) / 2;
+    _card.frame = CGRectMake((b.size.width - cardW) / 2, cardTop, cardW, cardH);
+
+    UIVisualEffectView *bvg = (UIVisualEffectView *)[_card viewWithTag:999];
+    UIView *tint = (UIView *)[_card viewWithTag:998];
+    bvg.frame = _card.bounds;
+    tint.frame = _card.bounds;
+
+    CGFloat W = cardW;
+    [(UILabel *)[_card viewWithTag:101] setFrame:CGRectMake(18, 14, W - 90, 26)];
+    [(UIButton *)[_card viewWithTag:102] setFrame:CGRectMake(W - 40, 12, 26, 26)];
+
+    _scroll.frame = CGRectMake(0, headerH, W, cardH - headerH - 8);
+    _scroll.contentSize = CGSizeMake(W, listH);
+
+    for (int i = 0; i < (int)_codes.count; i++) {
+        UIButton *btn = (UIButton *)[_scroll viewWithTag:9000 + i];
+        btn.frame = CGRectMake(0, i * rowH, W, rowH);
+        UIView *sep = [_scroll viewWithTag:9500 + i];
+        sep.frame = CGRectMake(18, (i + 1) * rowH - 0.5, W - 36, 0.5);
+    }
+}
+
+- (void)regionPicked:(UIButton *)btn {
+    int idx = (int)btn.tag - 9000;
+    if (idx < 0 || idx >= (int)_codes.count) return;
+    NSString *code = _codes[idx];
+    ttgSelectedRegion = code;
+    TTGApplyRegionChange();
+    NSLog(@"[TTG] 🌍 regionPicked: %@", code);
+    if (@available(iOS 10.0, *)) {
+        [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+    }
+    [self dismissSelf];
+    TTGShowToast([NSString stringWithFormat:@"✅ 已切换地区：%@", TTGRegionInfo(code)[@"name"]]);
 }
 
 @end
@@ -2259,42 +2601,20 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 
     [self dismissSelf];
 
-    // 详情页也用 addSubview 到 window（绕开 presentViewController）
+    // 详情页/地区选择 —— 全部用纯 UIView 面板 addSubview 到 window（window 会持有面板，无需额外 retain）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIWindow *win = TTGFrontmostWindow();
-        if (!win) return;
+        NSString *className = nil;
+        if ([action isEqualToString:@"region"]) className = @"TTGRegionPanel";
+        else if ([action isEqualToString:@"tabbar"]) className = @"TTGTabBarSettingsPanel";
+        else if ([action isEqualToString:@"topbar"]) className = @"TTGTopBarSettingsPanel";
+        if (!className) return;
 
-        if ([action isEqualToString:@"region"]) {
-            // 地区选择 —— 弹 alert
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🌍 切换地区"
-                message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-            NSArray *regions = @[@"US", @"JP", @"KR", @"GB", @"FR", @"DE", @"CA", @"AU", @"MX", @"BR", @"IN", @"ID", @"TH", @"VN", @"PH", @"NG", @"ZA", @"EG"];
-            for (NSString *r in regions) {
-                NSString *display = TTGRegionDisplayNameForCode(r);
-                [alert addAction:[UIAlertAction actionWithTitle:display style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-                    ttgSelectedRegion = r;
-                    TTGShowToast([NSString stringWithFormat:@"✅ 已切换地区：%@", r]);
-                }]];
-            }
-            [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-            UIViewController *topVC = TTGTopVC();
-            [topVC presentViewController:alert animated:YES completion:nil];
-
-        } else if ([action isEqualToString:@"tabbar"] || [action isEqualToString:@"topbar"]) {
-            // 详情页 —— addSubview 到 window（跟设置面板一样的方式）
-            UIViewController *vc = nil;
-            Class cls = NSClassFromString(@"TTGTabBarSettingsViewController");
-            if (cls) vc = [[cls alloc] init];
-            if (!vc) return;
-
-            // 🔴 详情页 view 也会有同样的触摸问题！先清手势！
-            UIView *vcView = vc.view;
-            vcView.frame = win.bounds;
-            vcView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-            [win addSubview:vcView];
-            TTGRemoveAllGesturesInView(vcView);
-            NSLog(@"[TTG] ✅ 详情页已 addSubview 到 window + 已清除手势");
-        }
+        Class cls = NSClassFromString(className);
+        if (!cls) { NSLog(@"[TTG] ❌ 找不到面板类 %@", className); return; }
+        id panel = [[cls alloc] init];
+        if (!panel) return;
+        [panel show];
+        NSLog(@"[TTG] ✅ 已打开面板 %@", className);
     });
 }
 
