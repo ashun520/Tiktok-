@@ -458,22 +458,33 @@ static void TTGApplyTabBarTransparent(void) {
     });
 }
 
-static char kTTGBarOrigFrameKey;
+// 动态 hook 底栏类的 setFrame: —— TikTok 每次布局重设 frame 时都会被我们拦截，
+// 悬浮 frame 永不失效（之前直接 setFrame 会被 TikTok 的布局循环立刻覆盖回去）
+static NSMutableSet *_ttg_hookedBarClasses = nil;
+static void TTGHookBarSetFrameOnce(Class cls) {
+    if (!cls) return;
+    if (!_ttg_hookedBarClasses) _ttg_hookedBarClasses = [NSMutableSet set];
+    NSString *key = NSStringFromClass(cls);
+    if ([_ttg_hookedBarClasses containsObject:key]) return;
+    [_ttg_hookedBarClasses addObject:key];
+    Method m = class_getInstanceMethod(cls, @selector(setFrame:));
+    if (!m) return;
+    IMP orig = method_getImplementation(m);
+    IMP newImp = imp_implementationWithBlock(^(__unsafe_unretained UIView *self, CGRect f){
+        if (tabBarTransparent && tabBarFloating &&
+            f.size.width >= 200 && f.size.height >= 40 && f.size.height <= 140) {
+            f.origin.x += 20;   // 左右各留 20 → 悬浮胶囊
+            f.size.width -= 40;
+            f.origin.y -= 20;   // 上浮 20 → 底部留空隙，真·悬浮 dock
+        }
+        ((void (*)(id, SEL, CGRect))orig)(self, @selector(setFrame:), f);
+    });
+    method_setImplementation(m, newImp);
+    NSLog(@"[TTG] 🧊 已 hook %@ 的 setFrame:（悬浮底栏）", key);
+}
 
-// 悬浮 dock：从保存的原始 frame 计算（幂等，0.3s 轮询反复调也不会叠加）
+// 悬浮 dock 外观：磨砂胶囊 + 圆角 + 阴影（frame 由 setFrame hook 负责）
 static void TTGStyleFloatingBar(UIView *bar) {
-    NSValue *orig = objc_getAssociatedObject(bar, &kTTGBarOrigFrameKey);
-    if (!orig) {
-        orig = [NSValue valueWithCGRect:bar.frame];
-        objc_setAssociatedObject(bar, &kTTGBarOrigFrameKey, orig, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    CGRect of = [orig CGRectValue];
-    CGRect f = of;
-    CGFloat margin = 20;
-    f.origin.x = of.origin.x + margin;
-    f.size.width = of.size.width - margin * 2;
-    f.origin.y = of.origin.y - 20; // 明显上浮，底部留出空隙才像 dock
-    bar.frame = f;
     bar.alpha = 1.0; // 悬浮时图标/文字保持可见，不要变淡！
     // 深色磨砂胶囊背景只加一次
     UIVisualEffectView *blurView = [bar viewWithTag:99999];
@@ -495,13 +506,8 @@ static void TTGStyleFloatingBar(UIView *bar) {
     bar.layer.masksToBounds = NO;
 }
 
-// 还原底栏（frame / blur / 圆角 / 阴影 / alpha 全部复位）
+// 还原底栏（frame 会随 TikTok 下次布局自动复原，这里清胶囊/圆角/阴影/alpha）
 static void TTGRestoreBar(UIView *bar) {
-    NSValue *orig = objc_getAssociatedObject(bar, &kTTGBarOrigFrameKey);
-    if (orig) {
-        bar.frame = [orig CGRectValue];
-        objc_setAssociatedObject(bar, &kTTGBarOrigFrameKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
     bar.alpha = 1.0;
     bar.layer.cornerRadius = 0;
     bar.layer.shadowOpacity = 0;
@@ -531,6 +537,8 @@ static void TTGApplyTabBarTransparentToView(UIView *v) {
             }
             return;
         }
+        // 确认是底栏 → hook 它的 setFrame:（悬浮 frame 防 TikTok 布局覆盖）
+        TTGHookBarSetFrameOnce([v class]);
         if (tabBarTransparent) {
             // 通用：bar 本体保持不透明 → 图标/文字不变淡
             v.alpha = 1.0;
@@ -607,10 +615,12 @@ static void TTGReflowTopBarContainer(UIView *container) {
     CGFloat W = container.bounds.size.width;
     CGFloat totalW = 0;
     for (UIView *s in vis) totalW += s.frame.size.width;
-    CGFloat gap = (W - totalW) / (CGFloat)(vis.count + 1);
-    if (gap < 2) gap = 2;
-    if (gap > 250) return; // 容器找错了，跳过
-    CGFloat x = gap;
+    // 紧凑居中：固定间距，整体居中（比均匀分布更像 TikTok 原本的排版）
+    CGFloat gap = 24;
+    CGFloat blockW = totalW + gap * (CGFloat)(vis.count - 1);
+    if (blockW > W + 40) return; // 容器找错了，跳过
+    CGFloat x = (W - blockW) / 2;
+    if (x < 8) x = 8;
     for (UIView *s in vis) {
         if (!objc_getAssociatedObject(s, &kTTGTopBarMovedKey)) {
             objc_setAssociatedObject(s, &kTTGTopBarMovedKey, [NSValue valueWithCGRect:s.frame], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -654,6 +664,13 @@ static void TTGScanTopBarItems(UIView *v) {
     NSString *viewID = v.accessibilityIdentifier ?: @"";
     NSString *label = v.accessibilityLabel ?: @"";
     NSString *text = ([v respondsToSelector:@selector(text)] && [(id)v text]) ? [(id)v text] : @"";
+    // UIButton 的文字在 currentTitle，不在 text
+    if (text.length == 0 && [v isKindOfClass:[UIButton class]]) {
+        text = [(UIButton *)v currentTitle] ?: @"";
+    }
+    // 位置（window 坐标）：类名模糊匹配只限顶栏区域，防误伤 feed/搜索页
+    CGRect gf = [v.superview convertRect:v.frame toView:nil];
+    BOOL inTop = gf.origin.y >= 0 && gf.origin.y < 180 && gf.size.height > 0 && gf.size.height <= 130;
 
     // + 号/小花按钮（中间的创建按钮）
     BOOL isPlus =
@@ -675,13 +692,16 @@ static void TTGScanTopBarItems(UIView *v) {
         [clsName rangeOfString:@"avatarcontainer" options:NSCaseInsensitiveSearch].location != NSNotFound ||
         [clsName rangeOfString:@"profilebutton" options:NSCaseInsensitiveSearch].location != NSNotFound);
 
-    // 搜索按钮 🔍
+    // 搜索按钮 🔍（类名匹配加顶栏区域守卫，防误伤搜索页）
     BOOL isSearch =
         hide_Tab_Search && (
         [clsName rangeOfString:@"searchbutton" options:NSCaseInsensitiveSearch].location != NSNotFound ||
         [clsName rangeOfString:@"searchicon" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-        [viewID rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-        [label rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound);
+        (inTop && [clsName rangeOfString:@"searchentry" options:NSCaseInsensitiveSearch].location != NSNotFound) ||
+        (inTop && [clsName rangeOfString:@"searchentrance" options:NSCaseInsensitiveSearch].location != NSNotFound) ||
+        (inTop && [viewID rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound) ||
+        (inTop && [label rangeOfString:@"search" options:NSCaseInsensitiveSearch].location != NSNotFound) ||
+        (inTop && [label isEqualToString:@"搜索"]));
 
     // Tab 文字匹配（For You/Recommended/Following/Friends/Live/社区/东京都）
     BOOL isTab = NO;
@@ -701,7 +721,15 @@ static void TTGScanTopBarItems(UIView *v) {
             [text caseInsensitiveCompare:@"LIVE"] == NSOrderedSame ||
             [text caseInsensitiveCompare:@"Live"] == NSOrderedSame ||
             [text caseInsensitiveCompare:@"live"] == NSOrderedSame ||
-            [text isEqualToString:@"直播"])) isTab = YES;
+            [text isEqualToString:@"直播"] ||
+            // LIVE 入口多半是图标按钮，没有文字 → 靠类名/无障碍标签（限顶栏区域）
+            (inTop && [clsName rangeOfString:@"liveentrance" options:NSCaseInsensitiveSearch].location != NSNotFound) ||
+            (inTop && [clsName rangeOfString:@"liveentry" options:NSCaseInsensitiveSearch].location != NSNotFound) ||
+            (inTop && [clsName rangeOfString:@"livebutton" options:NSCaseInsensitiveSearch].location != NSNotFound) ||
+            (inTop && [clsName rangeOfString:@"livetab" options:NSCaseInsensitiveSearch].location != NSNotFound) ||
+            (inTop && [viewID rangeOfString:@"live" options:NSCaseInsensitiveSearch].location != NSNotFound) ||
+            (inTop && [label rangeOfString:@"live" options:NSCaseInsensitiveSearch].location != NSNotFound) ||
+            (inTop && [label containsString:@"直播"]))) isTab = YES;
     }
 
     BOOL shouldHide = hideTopBarItems && (isPlus || isAvatar || isSearch || isTab);
@@ -2196,13 +2224,13 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     [_card addSubview:lbl2];
 
     _items = @[
-        @{@"title": @"📺 推荐 / For You Tab",  @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Recommended], @"desc": @"For You / 推荐 文字 tab"},
-        @{@"title": @"👥 关注 / Following Tab", @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Following],   @"desc": @"Following / 关注 文字 tab"},
-        @{@"title": @"🤝 好友 / Friends Tab",   @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Friends],     @"desc": @"Friends / 好友 文字 tab"},
-        @{@"title": @"🔴 LIVE 直播入口",         @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Live],        @"desc": @"LIVE / 直播 tab"},
-        @{@"title": @"➕ 中间 + 号 / 小花按钮",  @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Plus],        @"desc": @"发视频的创建按钮"},
-        @{@"title": @"👤 右上角头像",            @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Avatar],      @"desc": @"头像/个人主页入口"},
-        @{@"title": @"🔍 搜索按钮",              @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Search],      @"desc": @"顶栏右上角搜索图标"},
+        @{@"title": @"📺 推荐 / For You Tab",  @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Recommended]},
+        @{@"title": @"👥 关注 / Following Tab", @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Following]},
+        @{@"title": @"🤝 好友 / Friends Tab",   @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Friends]},
+        @{@"title": @"🔴 LIVE 直播入口",         @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Live]},
+        @{@"title": @"➕ 中间 + 号 / 小花按钮",  @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Plus]},
+        @{@"title": @"👤 右上角头像",            @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Avatar]},
+        @{@"title": @"🔍 搜索按钮",              @"ptr": [NSValue valueWithPointer:(const void *)&hide_Tab_Search]},
     ];
 
     _scroll = [[UIScrollView alloc] init];
@@ -2224,18 +2252,10 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         t.tag = 1;
         [row addSubview:t];
 
-        UILabel *d = [[UILabel alloc] init];
-        d.text = it[@"desc"];
-        d.font = [UIFont systemFontOfSize:11.5];
-        d.textColor = [UIColor systemGrayColor];
-        d.userInteractionEnabled = NO;
-        d.tag = 2;
-        [row addSubview:d];
-
         BOOL *flag = (BOOL *)[(NSValue *)it[@"ptr"] pointerValue];
         TTGCustomSwitch *sw = [[TTGCustomSwitch alloc] init];
         sw.on = flag ? *flag : NO;
-        sw.tag = i;
+        sw.tag = 300 + i; // 避开行内 t.tag=1 / sep.tag=3 的冲突（之前 i=3 时 viewWithTag:3 抓错视图导致开关移位）
         [sw addTarget:self action:@selector(itemToggled:) forControlEvents:UIControlEventValueChanged];
         [row addSubview:sw];
 
@@ -2255,7 +2275,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 
     CGFloat cardW = MIN(b.size.width - 32, 420);
     CGFloat headerH = 108; // title + main switch + section label
-    CGFloat rowH = 56;
+    CGFloat rowH = 46; // 去掉了副标题小字，行高压窄更清爽
     CGFloat listH = rowH * _items.count;
     CGFloat maxCardH = b.size.height - 120;
     CGFloat cardH = MIN(headerH + listH + 16, maxCardH);
@@ -2281,14 +2301,9 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         UIView *row = [_scroll viewWithTag:8000 + i];
         row.frame = CGRectMake(0, i * rowH, W, rowH);
         UILabel *t = (UILabel *)[row viewWithTag:1];
-        UILabel *d = (UILabel *)[row viewWithTag:2];
         UIView *sep = [row viewWithTag:3];
-        t.frame = CGRectMake(pad, 6, W - pad * 2 - 70, 22);
-        d.frame = CGRectMake(pad, 28, W - pad * 2 - 70, 16);
-        TTGCustomSwitch *sw = nil;
-        for (UIView *sv in row.subviews) {
-            if ([sv isKindOfClass:[TTGCustomSwitch class]]) { sw = (TTGCustomSwitch *)sv; break; }
-        }
+        t.frame = CGRectMake(pad, 0, W - pad * 2 - 70, rowH);
+        TTGCustomSwitch *sw = (TTGCustomSwitch *)[row viewWithTag:300 + i];
         if (sw) sw.frame = CGRectMake(W - pad - 51, (rowH - 31) / 2, 51, 31);
         sep.frame = CGRectMake(pad, rowH - 0.5, W - pad * 2, 0.5);
     }
@@ -2306,8 +2321,9 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 }
 
 - (void)itemToggled:(TTGCustomSwitch *)sw {
-    if (sw.tag < 0 || sw.tag >= (int)_items.count) return;
-    NSDictionary *it = _items[sw.tag];
+    NSInteger idx = sw.tag - 300;
+    if (idx < 0 || idx >= (NSInteger)_items.count) return;
+    NSDictionary *it = _items[idx];
     BOOL *flag = (BOOL *)[(NSValue *)it[@"ptr"] pointerValue];
     if (flag) *flag = sw.on;
     NSLog(@"[TTG] 🔝 itemToggled: %@ → %d", it[@"title"], sw.on);
