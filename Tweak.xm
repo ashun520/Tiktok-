@@ -1055,6 +1055,57 @@ static void TTGDownloadBareAndSave(NSString *urlStr, NSURL *outURL, dispatch_que
 
 #pragma mark - 长按手势 + 底部磨砂面板
 
+// ==================== TTGCustomSwitch：自绘开关(不依赖 UISwitch 手势链) ====================
+@interface TTGCustomSwitch : UIControl
+@property(nonatomic,assign) BOOL on;
+@property(nonatomic,copy) void(^onChanged)(BOOL on);
+- (void)setOn:(BOOL)on animated:(BOOL)animated;
+@end
+
+@implementation TTGCustomSwitch {
+    UIView *_track;
+    UIView *_knob;
+}
+- (instancetype)init {
+    self = [super initWithFrame:CGRectMake(0, 0, 51, 31)];
+    if (self) {
+        _track = [[UIView alloc] initWithFrame:self.bounds];
+        _track.layer.cornerRadius = 15.5;
+        _track.backgroundColor = UIColor.systemGray5Color;
+        _track.userInteractionEnabled = NO;
+        [self addSubview:_track];
+        _knob = [[UIView alloc] initWithFrame:CGRectMake(2, 2, 27, 27)];
+        _knob.backgroundColor = UIColor.whiteColor;
+        _knob.layer.cornerRadius = 13.5;
+        _knob.layer.shadowColor = UIColor.blackColor.CGColor;
+        _knob.layer.shadowOpacity = 0.2;
+        _knob.layer.shadowRadius = 2;
+        _knob.layer.shadowOffset = CGSizeMake(0, 1);
+        _knob.userInteractionEnabled = NO;
+        [self addSubview:_knob];
+    }
+    return self;
+}
+- (void)setOn:(BOOL)on { [self setOn:on animated:NO]; }
+- (void)setOn:(BOOL)on animated:(BOOL)animated {
+    _on = on;
+    void (^apply)(void) = ^{
+        _track.backgroundColor = on ? UIColor.systemGreenColor : UIColor.systemGray5Color;
+        _knob.frame = on ? CGRectMake(22, 2, 27, 27) : CGRectMake(2, 2, 27, 27);
+    };
+    if (animated) [UIView animateWithDuration:0.2 animations:apply];
+    else apply();
+}
+// 在 began 里立刻翻转——不依赖 ended/按压识别,任何触摸链路都能触发
+- (BOOL)beginTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
+    [super beginTrackingWithTouch:touch withEvent:event];
+    [self setOn:!_on animated:YES];
+    if (self.onChanged) self.onChanged(_on);
+    [self sendActionsForControlEvents:UIControlEventValueChanged];
+    return NO;
+}
+@end
+
 // 长按手势处理：在 TikTok feed 上添加，触发 TTGActionPanelView
 @interface TTGActionPanelView : UIView
 @end
@@ -1312,25 +1363,13 @@ static NSMutableArray *_ttg_switch_ptrs = nil;
     for (UIView *sub in v.subviews) [self traverse:sub block:block];
 }
 
-- (void)switchToggled:(UISwitch *)sw {
-    if (sw.tag < 0 || sw.tag >= (int)_ttg_switch_ptrs.count) return;
-    id v = _ttg_switch_ptrs[sw.tag];
-    if ([v isKindOfClass:[NSValue class]]) {
-        BOOL *ptr = (BOOL *)[(NSValue *)v pointerValue];
-        if (ptr) *ptr = sw.isOn;
-    }
-}
-
 - (void)openSettings {
-    UIViewController *top = TTGTopVC();
-    if (!top) { [self dismiss]; return; }
-    UIViewController *vc = [[NSClassFromString(@"TTGSettingsViewController") alloc] init];
-    if (!vc) return;
-    vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
-    vc.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
     [self dismiss];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [top presentViewController:vc animated:YES completion:nil];
+        Class panelClass = NSClassFromString(@"TTGSettingsPanelView");
+        if (!panelClass) return;
+        id panel = [[panelClass alloc] init];
+        [panel show];
     });
 }
 
@@ -1578,8 +1617,8 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 @implementation TTGTabBarSettingsPanel {
     UIView *_dimmingView;
     UIView *_card;
-    UISwitch *_mainSwitch;
-    UISwitch *_floatSwitch;
+    TTGCustomSwitch *_mainSwitch;
+    TTGCustomSwitch *_floatSwitch;
     UISlider *_slider;
     UILabel *_alphaLabel;
 }
@@ -1675,9 +1714,8 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     lbl1.tag = 111;
     [_card addSubview:lbl1];
 
-    _mainSwitch = [[UISwitch alloc] init];
+    _mainSwitch = [[TTGCustomSwitch alloc] init];
     _mainSwitch.on = tabBarTransparent;
-    if (@available(iOS 13.0, *)) _mainSwitch.onTintColor = [UIColor systemGreenColor];
     [_mainSwitch addTarget:self action:@selector(mainChanged:) forControlEvents:UIControlEventValueChanged];
     [_card addSubview:_mainSwitch];
 
@@ -1688,9 +1726,8 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     lbl2.tag = 113;
     [_card addSubview:lbl2];
 
-    _floatSwitch = [[UISwitch alloc] init];
+    _floatSwitch = [[TTGCustomSwitch alloc] init];
     _floatSwitch.on = tabBarFloating;
-    if (@available(iOS 13.0, *)) _floatSwitch.onTintColor = [UIColor systemGreenColor];
     [_floatSwitch addTarget:self action:@selector(floatChanged:) forControlEvents:UIControlEventValueChanged];
     [_card addSubview:_floatSwitch];
 
@@ -1788,7 +1825,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     _alphaLabel.text = [NSString stringWithFormat:@"%d%% — %@", pct, desc];
 }
 
-- (void)mainChanged:(UISwitch *)sw {
+- (void)mainChanged:(TTGCustomSwitch *)sw {
     NSLog(@"[TTG] 🎛️ tabbar mainChanged → on=%d", sw.on);
     tabBarTransparent = sw.on;
     TTGApplyTabBarTransparent();
@@ -1798,12 +1835,12 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     TTGShowToast(sw.on ? @"✅ 底栏透明已开启" : @"✅ 底栏已还原");
 }
 
-- (void)floatChanged:(UISwitch *)sw {
+- (void)floatChanged:(TTGCustomSwitch *)sw {
     NSLog(@"[TTG] 🎛️ tabbar floatChanged → on=%d", sw.on);
     tabBarFloating = sw.on;
     if (!tabBarTransparent) {
         tabBarTransparent = YES;
-        _mainSwitch.on = YES;
+        [_mainSwitch setOn:YES animated:YES];
     }
     TTGApplyTabBarTransparent();
     if (@available(iOS 10.0, *)) {
@@ -1834,7 +1871,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 @implementation TTGTopBarSettingsPanel {
     UIView *_dimmingView;
     UIView *_card;
-    UISwitch *_mainSwitch;
+    TTGCustomSwitch *_mainSwitch;
     NSArray *_items;
     UIScrollView *_scroll;
 }
@@ -1931,9 +1968,8 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     lbl1.tag = 111;
     [_card addSubview:lbl1];
 
-    _mainSwitch = [[UISwitch alloc] init];
+    _mainSwitch = [[TTGCustomSwitch alloc] init];
     _mainSwitch.on = hideTopBarItems;
-    if (@available(iOS 13.0, *)) _mainSwitch.onTintColor = [UIColor systemGreenColor];
     [_mainSwitch addTarget:self action:@selector(mainChanged:) forControlEvents:UIControlEventValueChanged];
     [_card addSubview:_mainSwitch];
 
@@ -1983,9 +2019,8 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         [row addSubview:d];
 
         BOOL *flag = (BOOL *)[(NSValue *)it[@"ptr"] pointerValue];
-        UISwitch *sw = [[UISwitch alloc] init];
+        TTGCustomSwitch *sw = [[TTGCustomSwitch alloc] init];
         sw.on = flag ? *flag : NO;
-        if (@available(iOS 13.0, *)) sw.onTintColor = [UIColor systemGreenColor];
         sw.tag = i;
         [sw addTarget:self action:@selector(itemToggled:) forControlEvents:UIControlEventValueChanged];
         [row addSubview:sw];
@@ -2036,16 +2071,16 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         UIView *sep = [row viewWithTag:3];
         t.frame = CGRectMake(pad, 6, W - pad * 2 - 70, 22);
         d.frame = CGRectMake(pad, 28, W - pad * 2 - 70, 16);
-        UISwitch *sw = nil;
+        TTGCustomSwitch *sw = nil;
         for (UIView *sv in row.subviews) {
-            if ([sv isKindOfClass:[UISwitch class]]) { sw = (UISwitch *)sv; break; }
+            if ([sv isKindOfClass:[TTGCustomSwitch class]]) { sw = (TTGCustomSwitch *)sv; break; }
         }
         if (sw) sw.frame = CGRectMake(W - pad - 51, (rowH - 31) / 2, 51, 31);
         sep.frame = CGRectMake(pad, rowH - 0.5, W - pad * 2, 0.5);
     }
 }
 
-- (void)mainChanged:(UISwitch *)sw {
+- (void)mainChanged:(TTGCustomSwitch *)sw {
     NSLog(@"[TTG] 🔝 topbar mainChanged → on=%d", sw.on);
     hideTopBarItems = sw.on;
     TTGApplyHideTopBar();
@@ -2055,12 +2090,12 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     TTGShowToast(sw.on ? @"✅ 隐藏顶栏已开启" : @"✅ 顶栏已还原");
 }
 
-- (void)itemToggled:(UISwitch *)sw {
+- (void)itemToggled:(TTGCustomSwitch *)sw {
     if (sw.tag < 0 || sw.tag >= (int)_items.count) return;
     NSDictionary *it = _items[sw.tag];
     BOOL *flag = (BOOL *)[(NSValue *)it[@"ptr"] pointerValue];
-    if (flag) *flag = sw.isOn;
-    NSLog(@"[TTG] 🔝 itemToggled: %@ → %d", it[@"title"], sw.isOn);
+    if (flag) *flag = sw.on;
+    NSLog(@"[TTG] 🔝 itemToggled: %@ → %d", it[@"title"], sw.on);
 
     // 至少勾了一个 → 自动开总开关；全没勾 → 自动关
     BOOL any = NO;
@@ -2070,10 +2105,10 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     }
     if (any && !hideTopBarItems) {
         hideTopBarItems = YES;
-        _mainSwitch.on = YES;
+        [_mainSwitch setOn:YES animated:YES];
     } else if (!any && hideTopBarItems) {
         hideTopBarItems = NO;
-        _mainSwitch.on = NO;
+        [_mainSwitch setOn:NO animated:YES];
     }
     TTGApplyHideTopBar();
     if (@available(iOS 10.0, *)) {
@@ -2426,12 +2461,10 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         [rowContainer addSubview:titleLbl];
 
         if (row[@"ptr"]) {
-            // Switch 行
+            // Switch 行 —— TTGCustomSwitch 自绘开关
             BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
-            UISwitch *sw = [[UISwitch alloc] init];
+            TTGCustomSwitch *sw = [[TTGCustomSwitch alloc] init];
             sw.on = flag ? *flag : NO;
-            if (@available(iOS 13.0, *)) sw.onTintColor = [UIColor systemGreenColor];
-            sw.userInteractionEnabled = YES;
             [sw addTarget:self action:@selector(switchToggled:) forControlEvents:UIControlEventValueChanged];
             [rowContainer addSubview:sw];
         } else if (row[@"action"]) {
@@ -2543,14 +2576,13 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         UILabel *tLbl = (UILabel *)[rowView viewWithTag:3000 + i];
         tLbl.frame = CGRectMake(18, 0, W - 120, rowH);
 
-        // switch
-        UISwitch *sw = nil;
+        // switch —— TTGCustomSwitch 固定 51x31，贴右对齐（修"开关飘到文字上"）
+        TTGCustomSwitch *sw = nil;
         for (UIView *sv in rowView.subviews) {
-            if ([sv isKindOfClass:[UISwitch class]]) { sw = (UISwitch *)sv; break; }
+            if ([sv isKindOfClass:[TTGCustomSwitch class]]) { sw = (TTGCustomSwitch *)sv; break; }
         }
         if (sw) {
-            CGSize sz = [sw sizeThatFits:CGSizeZero];
-            sw.frame = CGRectMake(W - 18 - sz.width, (rowH - sz.height) / 2, sz.width, sz.height);
+            sw.frame = CGRectMake(W - 18 - 51, (rowH - 31) / 2, 51, 31);
         }
 
         // action 行
@@ -2573,14 +2605,14 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     footer.frame = CGRectMake(0, headerH + tableH + 4, W, 22);
 }
 
-- (void)switchToggled:(UISwitch *)sw {
+- (void)switchToggled:(TTGCustomSwitch *)sw {
     UIView *rowView = sw.superview;
     int idx = (int)rowView.tag - 1000;
     if (idx < 0 || idx >= (int)_rows.count) return;
     NSDictionary *row = _rows[idx];
     BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
-    if (flag) *flag = sw.isOn;
-    NSLog(@"[TTG] 🎛️ switchToggled: idx=%d on=%d title=%@", idx, sw.isOn, row[@"title"]);
+    if (flag) *flag = sw.on;
+    NSLog(@"[TTG] 🎛️ switchToggled: idx=%d on=%d title=%@", idx, sw.on, row[@"title"]);
 
     // 振动反馈
     if (@available(iOS 10.0, *)) {
@@ -2640,8 +2672,8 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
         UIView *rowView = _rowViews[i];
         for (UIView *sv in rowView.subviews) {
-            if ([sv isKindOfClass:[UISwitch class]]) {
-                ((UISwitch *)sv).on = flag ? *flag : NO;
+            if ([sv isKindOfClass:[TTGCustomSwitch class]]) {
+                ((TTGCustomSwitch *)sv).on = flag ? *flag : NO;
                 break;
             }
         }
