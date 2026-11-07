@@ -469,25 +469,25 @@ static void TTGStyleFloatingBar(UIView *bar) {
     }
     CGRect of = [orig CGRectValue];
     CGRect f = of;
-    CGFloat margin = 16;
+    CGFloat margin = 20;
     f.origin.x = of.origin.x + margin;
     f.size.width = of.size.width - margin * 2;
-    f.origin.y = of.origin.y - 10; // 上浮一点
+    f.origin.y = of.origin.y - 20; // 明显上浮，底部留出空隙才像 dock
     bar.frame = f;
     bar.alpha = 1.0; // 悬浮时图标/文字保持可见，不要变淡！
-    // 磨砂胶囊背景只加一次
+    // 深色磨砂胶囊背景只加一次
     UIVisualEffectView *blurView = [bar viewWithTag:99999];
     if (![blurView isKindOfClass:[UIVisualEffectView class]]) {
-        UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
+        UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleDark];
         blurView = [[UIVisualEffectView alloc] initWithEffect:blur];
         blurView.tag = 99999;
         blurView.userInteractionEnabled = NO;
-        blurView.layer.cornerRadius = 22;
+        blurView.layer.cornerRadius = 24;
         blurView.layer.masksToBounds = YES;
         [bar insertSubview:blurView atIndex:0];
     }
     blurView.frame = bar.bounds;
-    bar.layer.cornerRadius = 22;
+    bar.layer.cornerRadius = 24;
     bar.layer.shadowColor = [UIColor blackColor].CGColor;
     bar.layer.shadowOpacity = 0.25;
     bar.layer.shadowOffset = CGSizeMake(0, 4);
@@ -520,26 +520,52 @@ static void TTGApplyTabBarTransparentToView(UIView *v) {
         [clsName rangeOfString:@"homebar" options:NSCaseInsensitiveSearch].location != NSNotFound);
 
     if (isSysBar || isCustomBar) {
+        // 自定义类名匹配可能误伤"顶栏"（名字带 homebar/tabbar），加位置守卫：只处理屏幕下半部分的
+        CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
+        if (isCustomBar && v.frame.origin.y < screenH * 0.5) {
+            // 不是底栏：跳过样式，继续递归子视图
+            for (UIView *sub in [v.subviews copy]) {
+                TTGApplyTabBarTransparentToView(sub);
+            }
+            return;
+        }
         if (tabBarTransparent) {
+            // 通用：bar 本体保持不透明 → 图标/文字不变淡
+            v.alpha = 1.0;
             if (isSysBar) {
                 UITabBar *tabBar = (UITabBar *)v;
-                tabBar.backgroundColor = [UIColor clearColor];
                 tabBar.layer.borderWidth = 0;
                 if (@available(iOS 13.0, *)) {
                     UITabBarAppearance *app = [[UITabBarAppearance alloc] init];
                     [app configureWithTransparentBackground];
-                    app.backgroundColor = [UIColor clearColor];
+                    if (tabBarFloating) {
+                        app.backgroundColor = [UIColor clearColor]; // 悬浮：全透明露出胶囊
+                    } else {
+                        // 只调"背景"透明度，文字图标不受影响
+                        app.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:tabBarAlpha];
+                    }
                     app.shadowColor = [UIColor clearColor];
                     [tabBar setStandardAppearance:app];
                     if (@available(iOS 15.0, *)) { [tabBar setScrollEdgeAppearance:app]; }
+                }
+            } else {
+                // TikTok 自定义底栏：调背景色/背景子视图透明度
+                if (tabBarFloating) {
+                    v.backgroundColor = [UIColor clearColor];
+                } else {
+                    v.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:tabBarAlpha];
+                }
+                for (UIView *sub in v.subviews) {
+                    NSString *sn = NSStringFromClass([sub class]);
+                    if ([sn rangeOfString:@"background" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                        sub.alpha = tabBarFloating ? 0.0 : tabBarAlpha;
+                    }
                 }
             }
             if (tabBarFloating) {
                 TTGStyleFloatingBar(v); // 悬浮 dock：图标文字保持可见
             } else {
-                // 纯透明模式：先还原可能存在的悬浮样式，再整体变淡
-                TTGRestoreBar(v);
-                v.alpha = tabBarAlpha;
+                TTGRestoreBar(v); // 还原可能存在的悬浮 frame/blur
             }
         } else {
             TTGRestoreBar(v);
@@ -553,6 +579,57 @@ static void TTGApplyTabBarTransparentToView(UIView *v) {
 
 #pragma mark - 隐藏顶栏元素
 
+// 顶栏隐藏/重排的标记 key（文件作用域，多函数共用）
+static char kTTGTopBarHidKey;      // 打在 label 上：值是被隐藏的视图（label 或 stack 子）
+static char kTTGTopBarMovedKey;    // 打在被移动过的兄弟视图上：值是原始 frame
+static char kTTGContainerMarkKey;  // 打在需要重排的容器上
+
+// 把容器里可见的子视图均匀重排（隐藏后的位置让出来，剩下的排好）
+static void TTGReflowTopBarContainer(UIView *container) {
+    if (!container || [container isKindOfClass:[UIStackView class]]) return; // stack 自动重排
+    CGFloat H = container.bounds.size.height;
+    if (H <= 20 || H > 130) return; // 只处理顶栏高度的容器，防误伤
+    if (![objc_getAssociatedObject(container, &kTTGContainerMarkKey) boolValue]) return;
+
+    NSMutableArray *vis = [NSMutableArray array];
+    for (UIView *sub in container.subviews) {
+        if (sub.hidden || sub.alpha < 0.05) continue;
+        if (sub.frame.size.width < 4) continue;
+        [vis addObject:sub];
+    }
+    if (vis.count < 1) return;
+    [vis sortUsingComparator:^NSComparisonResult(UIView *a, UIView *b) {
+        CGFloat ax = a.frame.origin.x, bx = b.frame.origin.x;
+        return ax < bx ? NSOrderedAscending : (ax > bx ? NSOrderedDescending : NSOrderedSame);
+    }];
+    CGFloat W = container.bounds.size.width;
+    CGFloat totalW = 0;
+    for (UIView *s in vis) totalW += s.frame.size.width;
+    CGFloat gap = (W - totalW) / (CGFloat)(vis.count + 1);
+    if (gap < 2) gap = 2;
+    if (gap > 250) return; // 容器找错了，跳过
+    CGFloat x = gap;
+    for (UIView *s in vis) {
+        if (!objc_getAssociatedObject(s, &kTTGTopBarMovedKey)) {
+            objc_setAssociatedObject(s, &kTTGTopBarMovedKey, [NSValue valueWithCGRect:s.frame], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        CGRect f = s.frame;
+        f.origin.x = x;
+        s.frame = f;
+        x += f.size.width + gap;
+    }
+}
+
+// 遍历 window，对所有被标记的容器做重排（每0.3s轮询调用，对抗 TikTok 自己的布局）
+static void TTGReflowMarkedContainersInView(UIView *v) {
+    if ([objc_getAssociatedObject(v, &kTTGContainerMarkKey) boolValue]) {
+        TTGReflowTopBarContainer(v);
+    }
+    for (UIView *sub in v.subviews) {
+        TTGReflowMarkedContainersInView(sub);
+    }
+}
+
 // 递归找并隐藏顶栏上的小花按钮、"+" 号按钮等干扰元素
 static void TTGApplyHideTopBar(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -560,6 +637,11 @@ static void TTGApplyHideTopBar(void) {
         if (!win) return;
         for (UIView *v in win.subviews) {
             TTGScanTopBarItems(v);
+        }
+        if (hideTopBarItems) {
+            for (UIView *v in win.subviews) {
+                TTGReflowMarkedContainersInView(v);
+            }
         }
         NSLog(@"[TTG] 🔝 隐藏顶栏元素 %@", hideTopBarItems ? @"开启" : @"关闭");
     });
@@ -620,21 +702,46 @@ static void TTGScanTopBarItems(UIView *v) {
             [text isEqualToString:@"直播"])) isTab = YES;
     }
 
-    static char kTTGTopBarHidKey;
     BOOL shouldHide = hideTopBarItems && (isPlus || isAvatar || isSearch || isTab);
     if (shouldHide) {
-        // 用 alpha=0 占位隐藏（不用 hidden，hidden 会让 TikTok 重新布局把位置挤掉）
-        if (![objc_getAssociatedObject(v, &kTTGTopBarHidKey) boolValue]) {
-            objc_setAssociatedObject(v, &kTTGTopBarHidKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            v.alpha = 0.0;
-            v.userInteractionEnabled = NO;
+        if (!objc_getAssociatedObject(v, &kTTGTopBarHidKey)) {
+            // 找真正要隐藏的节点：若在 UIStackView 里，隐藏 stack 的直接子视图 → stack 自动重排
+            UIView *hideView = v;
+            UIView *prev = v;
+            UIView *node = v.superview;
+            for (int i = 0; i < 4 && node; i++) {
+                if ([node isKindOfClass:[UIStackView class]]) { hideView = prev; break; }
+                prev = node;
+                node = node.superview;
+            }
+            hideView.hidden = YES;
+            hideView.userInteractionEnabled = NO;
+            objc_setAssociatedObject(v, &kTTGTopBarHidKey, hideView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            // 标记容器并立刻重排一次（非 stack 的手动布局需要我们把位置让出来）
+            UIView *container = hideView.superview;
+            if (container && container.bounds.size.height <= 130) {
+                objc_setAssociatedObject(container, &kTTGContainerMarkKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                TTGReflowTopBarContainer(container);
+            }
         }
     } else {
-        // 只恢复我们自己藏过的视图（不动 TikTok 本来隐藏的）
-        if ([objc_getAssociatedObject(v, &kTTGTopBarHidKey) boolValue]) {
+        // 只恢复我们自己藏过/动过的视图（不动 TikTok 本来的布局）
+        UIView *hideView = objc_getAssociatedObject(v, &kTTGTopBarHidKey);
+        if (hideView) {
             objc_setAssociatedObject(v, &kTTGTopBarHidKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            v.alpha = 1.0;
-            v.userInteractionEnabled = YES;
+            hideView.hidden = NO;
+            hideView.userInteractionEnabled = YES;
+        }
+        if (!hideTopBarItems) {
+            // 总开关关了：恢复被我们移动过的 frame + 清容器标记
+            NSValue *of = objc_getAssociatedObject(v, &kTTGTopBarMovedKey);
+            if (of) {
+                v.frame = [of CGRectValue];
+                objc_setAssociatedObject(v, &kTTGTopBarMovedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            if (objc_getAssociatedObject(v, &kTTGContainerMarkKey)) {
+                objc_setAssociatedObject(v, &kTTGContainerMarkKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
         }
     }
 
