@@ -289,6 +289,60 @@ static BOOL hide_Tab_Plus = YES;        // 中间 + 号（默认隐藏，省空�
 static BOOL hide_Tab_Avatar = YES;      // 头像（默认隐藏）
 static BOOL hide_Tab_Search = NO;       // 🔍 搜索
 
+#pragma mark - 设置持久化（NSUserDefaults，重启不丢）
+
+static void TTGSaveSettings(void) {
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    [d setBool:noads forKey:@"ttg_noads"];
+    [d setBool:downloadWithoutWatermark forKey:@"ttg_dl_nowm"];
+    [d setBool:autoPlayNextVideo forKey:@"ttg_autoplay"];
+    [d setBool:showProgressBar forKey:@"ttg_progress"];
+    [d setBool:canHideUI forKey:@"ttg_hideui"];
+    [d setBool:enablePIP forKey:@"ttg_pip"];
+    [d setBool:enableBackgroundPlay forKey:@"ttg_bgplay"];
+    [d setBool:enableBypass forKey:@"ttg_bypass"];
+    [d setBool:tabBarTransparent forKey:@"ttg_tab_transparent"];
+    [d setDouble:tabBarAlpha forKey:@"ttg_tab_alpha"];
+    [d setBool:tabBarFloating forKey:@"ttg_tab_floating"];
+    [d setBool:hideTopBarItems forKey:@"ttg_topbar_hide"];
+    [d setBool:hide_Tab_Recommended forKey:@"ttg_h_rec"];
+    [d setBool:hide_Tab_Following forKey:@"ttg_h_fol"];
+    [d setBool:hide_Tab_Friends forKey:@"ttg_h_fri"];
+    [d setBool:hide_Tab_Live forKey:@"ttg_h_live"];
+    [d setBool:hide_Tab_Plus forKey:@"ttg_h_plus"];
+    [d setBool:hide_Tab_Avatar forKey:@"ttg_h_avatar"];
+    [d setBool:hide_Tab_Search forKey:@"ttg_h_search"];
+}
+
+static void TTGLoadSettings(void) {
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if (![d boolForKey:@"ttg_has_saved"]) {
+        // 首次运行：把当前默认值写进去，保持出厂默认
+        [d setBool:YES forKey:@"ttg_has_saved"];
+        TTGSaveSettings();
+        return;
+    }
+    noads = [d boolForKey:@"ttg_noads"];
+    downloadWithoutWatermark = [d boolForKey:@"ttg_dl_nowm"];
+    autoPlayNextVideo = [d boolForKey:@"ttg_autoplay"];
+    showProgressBar = [d boolForKey:@"ttg_progress"];
+    canHideUI = [d boolForKey:@"ttg_hideui"];
+    enablePIP = [d boolForKey:@"ttg_pip"];
+    enableBackgroundPlay = [d boolForKey:@"ttg_bgplay"];
+    enableBypass = [d boolForKey:@"ttg_bypass"];
+    tabBarTransparent = [d boolForKey:@"ttg_tab_transparent"];
+    tabBarAlpha = [d doubleForKey:@"ttg_tab_alpha"];
+    tabBarFloating = [d boolForKey:@"ttg_tab_floating"];
+    hideTopBarItems = [d boolForKey:@"ttg_topbar_hide"];
+    hide_Tab_Recommended = [d boolForKey:@"ttg_h_rec"];
+    hide_Tab_Following = [d boolForKey:@"ttg_h_fol"];
+    hide_Tab_Friends = [d boolForKey:@"ttg_h_fri"];
+    hide_Tab_Live = [d boolForKey:@"ttg_h_live"];
+    hide_Tab_Plus = [d boolForKey:@"ttg_h_plus"];
+    hide_Tab_Avatar = [d boolForKey:@"ttg_h_avatar"];
+    hide_Tab_Search = [d boolForKey:@"ttg_h_search"];
+}
+
 #pragma mark - 地区切换（国家码 → mcc/mnc/iso/language/emoji）
 
 static NSString *ttgSelectedRegion = @"US"; // 默认美国
@@ -404,74 +458,95 @@ static void TTGApplyTabBarTransparent(void) {
     });
 }
 
-static void TTGApplyTabBarTransparentToView(UIView *v) {
-    // UITabBar（系统类）
-    if ([v isKindOfClass:[UITabBar class]]) {
-        UITabBar *tabBar = (UITabBar *)v;
-        if (tabBarTransparent) {
-            tabBar.backgroundColor = [UIColor clearColor];
-            tabBar.alpha = tabBarAlpha; // 用户可调
-            tabBar.layer.borderWidth = 0;
-            tabBar.layer.shadowOpacity = 0;
-            if (@available(iOS 13.0, *)) {
-                UITabBarAppearance *app = [[UITabBarAppearance alloc] init];
-                [app configureWithTransparentBackground];
-                app.backgroundColor = [UIColor clearColor];
-                app.shadowColor = [UIColor clearColor];
-                [tabBar setStandardAppearance:app];
-                if (@available(iOS 15.0, *)) { [tabBar setScrollEdgeAppearance:app]; }
-            }
-            // 悬浮模式：缩窄 + 圆角 + 上移
-            if (tabBarFloating) {
-                CGRect f = tabBar.frame;
-                CGFloat margin = 20;
-                f.origin.x += margin;
-                f.size.width -= margin * 2;
-                f.origin.y -= 8; // 稍微上浮
-                tabBar.frame = f;
-                tabBar.layer.cornerRadius = 20;
-                tabBar.layer.masksToBounds = YES;
-                tabBar.layer.shadowColor = [UIColor blackColor].CGColor;
-                tabBar.layer.shadowOpacity = 0.3;
-                tabBar.layer.shadowOffset = CGSizeMake(0, 4);
-                tabBar.layer.shadowRadius = 10;
-                tabBar.layer.masksToBounds = NO;
-                // 用一个模糊背景
-                UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
-                UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blur];
-                blurView.frame = tabBar.bounds;
-                blurView.layer.cornerRadius = 20;
-                blurView.layer.masksToBounds = YES;
-                blurView.tag = 99999;
-                [tabBar insertSubview:blurView atIndex:0];
-            }
-        } else {
-            tabBar.alpha = 1.0;
-            // 还原 frame
-            if (tabBarFloating) {
-                CGRect f = tabBar.frame;
-                f.origin.x = 0;
-                f.size.width = tabBar.superview.bounds.size.width;
-                f.origin.y += 8;
-                tabBar.frame = f;
-                tabBar.layer.cornerRadius = 0;
-                tabBar.layer.shadowOpacity = 0;
-                UIView *old = [tabBar viewWithTag:99999];
-                if (old) [old removeFromSuperview];
-            }
-        }
+static char kTTGBarOrigFrameKey;
+
+// 悬浮 dock：从保存的原始 frame 计算（幂等，0.3s 轮询反复调也不会叠加）
+static void TTGStyleFloatingBar(UIView *bar) {
+    NSValue *orig = objc_getAssociatedObject(bar, &kTTGBarOrigFrameKey);
+    if (!orig) {
+        orig = [NSValue valueWithCGRect:bar.frame];
+        objc_setAssociatedObject(bar, &kTTGBarOrigFrameKey, orig, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    // TikTok 自定义底栏：包含 tabbar/bottombar/homebar/TTBar 的
+    CGRect of = [orig CGRectValue];
+    CGRect f = of;
+    CGFloat margin = 16;
+    f.origin.x = of.origin.x + margin;
+    f.size.width = of.size.width - margin * 2;
+    f.origin.y = of.origin.y - 10; // 上浮一点
+    bar.frame = f;
+    bar.alpha = 1.0; // 悬浮时图标/文字保持可见，不要变淡！
+    // 磨砂胶囊背景只加一次
+    UIVisualEffectView *blurView = [bar viewWithTag:99999];
+    if (![blurView isKindOfClass:[UIVisualEffectView class]]) {
+        UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
+        blurView = [[UIVisualEffectView alloc] initWithEffect:blur];
+        blurView.tag = 99999;
+        blurView.userInteractionEnabled = NO;
+        blurView.layer.cornerRadius = 22;
+        blurView.layer.masksToBounds = YES;
+        [bar insertSubview:blurView atIndex:0];
+    }
+    blurView.frame = bar.bounds;
+    bar.layer.cornerRadius = 22;
+    bar.layer.shadowColor = [UIColor blackColor].CGColor;
+    bar.layer.shadowOpacity = 0.25;
+    bar.layer.shadowOffset = CGSizeMake(0, 4);
+    bar.layer.shadowRadius = 12;
+    bar.layer.masksToBounds = NO;
+}
+
+// 还原底栏（frame / blur / 圆角 / 阴影 / alpha 全部复位）
+static void TTGRestoreBar(UIView *bar) {
+    NSValue *orig = objc_getAssociatedObject(bar, &kTTGBarOrigFrameKey);
+    if (orig) {
+        bar.frame = [orig CGRectValue];
+        objc_setAssociatedObject(bar, &kTTGBarOrigFrameKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    bar.alpha = 1.0;
+    bar.layer.cornerRadius = 0;
+    bar.layer.shadowOpacity = 0;
+    UIView *old = [bar viewWithTag:99999];
+    if (old) [old removeFromSuperview];
+}
+
+static void TTGApplyTabBarTransparentToView(UIView *v) {
+    if (v.tag == 99999) return; // 自己加的 blur，跳过
+    BOOL isSysBar = [v isKindOfClass:[UITabBar class]];
     NSString *clsName = NSStringFromClass([v class]);
-    if (tabBarTransparent && (
+    BOOL isCustomBar = !isSysBar && (
         [clsName caseInsensitiveCompare:@"TTTabBar"] == NSOrderedSame ||
         [clsName rangeOfString:@"tabbar" options:NSCaseInsensitiveSearch].location != NSNotFound ||
         [clsName rangeOfString:@"bottombar" options:NSCaseInsensitiveSearch].location != NSNotFound ||
-        [clsName rangeOfString:@"homebar" options:NSCaseInsensitiveSearch].location != NSNotFound
-    )) {
-        v.alpha = tabBarAlpha;
+        [clsName rangeOfString:@"homebar" options:NSCaseInsensitiveSearch].location != NSNotFound);
+
+    if (isSysBar || isCustomBar) {
+        if (tabBarTransparent) {
+            if (isSysBar) {
+                UITabBar *tabBar = (UITabBar *)v;
+                tabBar.backgroundColor = [UIColor clearColor];
+                tabBar.layer.borderWidth = 0;
+                if (@available(iOS 13.0, *)) {
+                    UITabBarAppearance *app = [[UITabBarAppearance alloc] init];
+                    [app configureWithTransparentBackground];
+                    app.backgroundColor = [UIColor clearColor];
+                    app.shadowColor = [UIColor clearColor];
+                    [tabBar setStandardAppearance:app];
+                    if (@available(iOS 15.0, *)) { [tabBar setScrollEdgeAppearance:app]; }
+                }
+            }
+            if (tabBarFloating) {
+                TTGStyleFloatingBar(v); // 悬浮 dock：图标文字保持可见
+            } else {
+                // 纯透明模式：先还原可能存在的悬浮样式，再整体变淡
+                TTGRestoreBar(v);
+                v.alpha = tabBarAlpha;
+            }
+        } else {
+            TTGRestoreBar(v);
+        }
+        return; // ⚠️ 不递归进底栏内部：防止遍历时增删 subview 导致卡死
     }
-    for (UIView *sub in v.subviews) {
+    for (UIView *sub in [v.subviews copy]) { // copy 防遍历中突变
         TTGApplyTabBarTransparentToView(sub);
     }
 }
@@ -545,10 +620,22 @@ static void TTGScanTopBarItems(UIView *v) {
             [text isEqualToString:@"直播"])) isTab = YES;
     }
 
-    if ((isPlus || isAvatar || isSearch || isTab) && hideTopBarItems) {
-        v.hidden = YES;
-    } else if (!hideTopBarItems) {
-        v.hidden = NO; // 总开关关掉 → 全部恢复
+    static char kTTGTopBarHidKey;
+    BOOL shouldHide = hideTopBarItems && (isPlus || isAvatar || isSearch || isTab);
+    if (shouldHide) {
+        // 用 alpha=0 占位隐藏（不用 hidden，hidden 会让 TikTok 重新布局把位置挤掉）
+        if (![objc_getAssociatedObject(v, &kTTGTopBarHidKey) boolValue]) {
+            objc_setAssociatedObject(v, &kTTGTopBarHidKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            v.alpha = 0.0;
+            v.userInteractionEnabled = NO;
+        }
+    } else {
+        // 只恢复我们自己藏过的视图（不动 TikTok 本来隐藏的）
+        if ([objc_getAssociatedObject(v, &kTTGTopBarHidKey) boolValue]) {
+            objc_setAssociatedObject(v, &kTTGTopBarHidKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            v.alpha = 1.0;
+            v.userInteractionEnabled = YES;
+        }
     }
 
     for (UIView *sub in v.subviews) {
@@ -1828,6 +1915,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 - (void)mainChanged:(TTGCustomSwitch *)sw {
     NSLog(@"[TTG] 🎛️ tabbar mainChanged → on=%d", sw.on);
     tabBarTransparent = sw.on;
+    TTGSaveSettings();
     TTGApplyTabBarTransparent();
     if (@available(iOS 10.0, *)) {
         [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
@@ -1842,6 +1930,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         tabBarTransparent = YES;
         [_mainSwitch setOn:YES animated:YES];
     }
+    TTGSaveSettings();
     TTGApplyTabBarTransparent();
     if (@available(iOS 10.0, *)) {
         [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
@@ -1851,6 +1940,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 
 - (void)sliderChanged:(UISlider *)s {
     tabBarAlpha = s.value;
+    TTGSaveSettings();
     [self updateAlphaLabel];
     if (tabBarTransparent) TTGApplyTabBarTransparent();
 }
@@ -2083,6 +2173,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
 - (void)mainChanged:(TTGCustomSwitch *)sw {
     NSLog(@"[TTG] 🔝 topbar mainChanged → on=%d", sw.on);
     hideTopBarItems = sw.on;
+    TTGSaveSettings();
     TTGApplyHideTopBar();
     if (@available(iOS 10.0, *)) {
         [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
@@ -2110,6 +2201,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
         hideTopBarItems = NO;
         [_mainSwitch setOn:NO animated:YES];
     }
+    TTGSaveSettings();
     TTGApplyHideTopBar();
     if (@available(iOS 10.0, *)) {
         [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
@@ -2612,6 +2704,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     NSDictionary *row = _rows[idx];
     BOOL *flag = (BOOL *)[(NSValue *)row[@"ptr"] pointerValue];
     if (flag) *flag = sw.on;
+    TTGSaveSettings();
     NSLog(@"[TTG] 🎛️ switchToggled: idx=%d on=%d title=%@", idx, sw.on, row[@"title"]);
 
     // 振动反馈
@@ -2658,6 +2751,7 @@ static void TTGInstallGesturesOnWindow(UIWindow *win) {
     tabBarTransparent = YES;
     tabBarAlpha = 0.15;
     tabBarFloating = NO;
+    TTGSaveSettings();
     TTGApplyTabBarTransparent();
     TTGApplyHideTopBar();
     [self refreshAllSwitches];
@@ -2727,6 +2821,9 @@ static void TTGInstallSafeHooks(void) {
                 }
             }];
         NSLog(@"[TTG] ✅ 后台播放 hook");
+
+        // 恢复所有开关状态（重启不丢）
+        TTGLoadSettings();
 
         // 恢复用户上次选择的地区 + 应用
         NSString *savedRegion = [[NSUserDefaults standardUserDefaults] stringForKey:@"ttg_selected_region"];
