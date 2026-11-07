@@ -521,8 +521,10 @@ static void TTGApplyTabBarTransparentToView(UIView *v) {
 
     if (isSysBar || isCustomBar) {
         // 自定义类名匹配可能误伤"顶栏"（名字带 homebar/tabbar），加位置守卫：只处理屏幕下半部分的
+        // 注意：v.frame 是相对父视图的坐标，必须转成 window 坐标再判断！
         CGFloat screenH = [UIScreen mainScreen].bounds.size.height;
-        if (isCustomBar && v.frame.origin.y < screenH * 0.5) {
+        CGRect gf = [v.superview convertRect:v.frame toView:nil];
+        if (isCustomBar && gf.origin.y < screenH * 0.5) {
             // 不是底栏：跳过样式，继续递归子视图
             for (UIView *sub in [v.subviews copy]) {
                 TTGApplyTabBarTransparentToView(sub);
@@ -709,10 +711,25 @@ static void TTGScanTopBarItems(UIView *v) {
             UIView *hideView = v;
             UIView *prev = v;
             UIView *node = v.superview;
+            BOOL inStack = NO;
             for (int i = 0; i < 4 && node; i++) {
-                if ([node isKindOfClass:[UIStackView class]]) { hideView = prev; break; }
+                if ([node isKindOfClass:[UIStackView class]]) { hideView = prev; inStack = YES; break; }
                 prev = node;
                 node = node.superview;
+            }
+            if (!inStack) {
+                // 向上爬：把"只装着它一个"的包装容器一起藏掉，否则空包装容器还占着位置
+                UIView *p = v.superview;
+                int climb = 0;
+                while (p && climb < 3 && p.bounds.size.height <= 130) {
+                    NSInteger visCount = 0;
+                    for (UIView *s in p.subviews) { if (!s.hidden && s.alpha >= 0.05) visCount++; }
+                    if (visCount <= 1 && [p.subviews containsObject:hideView]) {
+                        hideView = p;
+                        p = p.superview;
+                        climb++;
+                    } else break;
+                }
             }
             hideView.hidden = YES;
             hideView.userInteractionEnabled = NO;
